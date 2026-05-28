@@ -114,3 +114,14 @@ export async function processVoice(audioFile) {
   if (!res.ok) throw new Error(`Voice processing failed: ${res.status}`);
   return res.json();
 }
+
+// Prior Authorization Pre-Check
+export async function priorAuthCheck(payer, cpt_codes, clinical_notes, diagnosis_codes = []) {
+  const res = await fetch(`${API_BASE_URL}/api/prior-auth-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ payer, cpt_codes, clinical_notes, diagnosis_codes }),
+  });
+  if (!res.ok) throw new Error(`Prior auth check failed: ${res.status} ${res.statusText}`);
+  return res.json();
+}

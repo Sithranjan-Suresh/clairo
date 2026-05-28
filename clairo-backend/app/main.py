@@ -10,6 +10,7 @@ from app.routes.risk import router as risk_router
 from app.routes.export import router as export_router
 from app.routes.analytics import router as analytics_router
 from app.routes.voice import router as voice_router
+from app.routes.prior_auth import router as prior_auth_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -36,6 +37,7 @@ app.include_router(risk_router, prefix="/risk")
 app.include_router(export_router, prefix="/export")
 app.include_router(analytics_router, prefix="/analytics")
 app.include_router(voice_router, prefix="/voice")
+app.include_router(prior_auth_router, prefix="/api")
 
 @app.get("/")
 def root():

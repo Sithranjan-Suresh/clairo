@@ -24,4 +24,10 @@ ingest_policy("EXCELLUS_BCBS", "app/data/policies/EXC-PRV-Autologous Chrondrocyt
 # Cigna / American Specialty Health (ASH) - Clinical Therapy Services 
 ingest_policy("CIGNA", "app/data/policies/cpg272_electric_stim_clinic.pdf")
 
+ingest_policy("MEDICARE", "app/data/policies/medicare_lcd_knee_arthroscopy.pdf")
+
+ingest_policy("CIGNA", "app/data/policies/cigna_cardiac_imaging.pdf")
+
+ingest_policy("AETNA", "app/data/policies/aetna_medical_necessity.pdf")
+
 print("Ingestion complete")

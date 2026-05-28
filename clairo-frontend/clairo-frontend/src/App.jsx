@@ -6,6 +6,7 @@ import PolicyPanel from "./components/PolicyPanel";
 import RiskHeatmap from "./components/RiskHeatmap";
 import AnalyticsPanel from "./components/AnalyticsPanel";
 import VoicePanel from "./components/VoicePanel";
+import PriorAuthPanel from "./components/PriorAuthPanel";
 
 import "./index.css";
 
@@ -16,6 +17,7 @@ const TABS = [
   { id: "heatmap",   label: "Risk Heatmap",     icon: "🌡" },
   { id: "analytics", label: "Analytics",         icon: "📊" },
   { id: "voice", label: "Voice AI", icon: "🎙" },
+  { id: "priorauth", label: "Prior Auth Check", icon: "🔐" },
 ];
 
 export default function App() {
@@ -75,6 +77,7 @@ export default function App() {
           {activeTab === "heatmap"   && <RiskHeatmap    uploadResult={uploadResult} />}
           {activeTab === "analytics" && <AnalyticsPanel />}
           {activeTab === "voice" && <VoicePanel />}
+          {activeTab === "priorauth" && <PriorAuthPanel uploadResult={uploadResult} />}
         </div>
       </main>
     </div>

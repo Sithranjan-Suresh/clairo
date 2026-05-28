@@ -2,13 +2,13 @@
 
 ## Overview
 
-CLAIRO is a full-stack AI-powered insurance denial management platform. It parses denial PDFs, classifies denials, scores claim risk, retrieves payer policy citations via RAG, and generates formal appeal letters using Groq LLMs.
+CLAIRO is a full-stack AI-powered insurance denial management platform. It parses denial PDFs, classifies denials, scores claim risk, retrieves payer policy citations via RAG, generates formal appeal letters using Groq LLMs, supports voice-commanded workflows, and exposes all tools via an MCP server for autonomous agent orchestration.
 
 ---
 
 ## Tech Stack
 
-**Backend:** FastAPI, SQLAlchemy (SQLite), ChromaDB, Groq (LLaMA 3.3 70B), Sentence Transformers, PyMuPDF, ReportLab
+**Backend:** FastAPI, SQLAlchemy (SQLite), ChromaDB, Groq (LLaMA 3.3 70B + Whisper Large v3), Sentence Transformers, PyMuPDF, ReportLab
 
 **Frontend:** React 19, Vite, Recharts, Tailwind-compatible CSS
 
@@ -20,21 +20,58 @@ CLAIRO is a full-stack AI-powered insurance denial management platform. It parse
 clairo-main/
 ├── clairo-backend/
 │   ├── app/
-│   │   ├── main.py              # FastAPI app + CORS middleware
-│   │   ├── database.py          # SQLite engine + session
-│   │   ├── models.py            # DenialClaim ORM model
-│   │   ├── routes/              # upload, appeal, risk, rag, export, analytics, voice
-│   │   ├── services/            # LLM services (Groq), PDF, risk scoring, analytics
-│   │   └── rag/                 # Embedder, vector store (ChromaDB), retriever, ingest
-│   ├── app/data/policies/       # Pre-loaded payer policy PDFs
-│   ├── requirements.txt
-│   └── .env                     # You create this (see setup)
+│   │   ├── main.py                    # FastAPI app + CORS middleware
+│   │   ├── database.py                # SQLite engine + session
+│   │   ├── models.py                  # DenialClaim ORM model
+│   │   ├── schemas.py
+│   │   ├── routes/
+│   │   │   ├── upload.py              # POST /upload
+│   │   │   ├── appeal.py              # POST /appeal/generate-appeal, /appeal/generate-from-claim
+│   │   │   ├── risk.py                # POST /risk/score-claim, /risk/score-queue
+│   │   │   ├── export.py              # POST /export/export-pdf, /export/viability
+│   │   │   ├── rag.py                 # GET /rag/retrieve
+│   │   │   ├── analytics.py           # GET /analytics/*, POST /analytics/seed
+│   │   │   └── voice.py              # POST /voice/process
+│   │   ├── services/
+│   │   │   ├── groq_services.py       # Groq client initialization
+│   │   │   ├── extraction_service.py  # Structured claim extraction
+│   │   │   ├── classification_service.py  # Denial classification
+│   │   │   ├── appeal_service.py      # Appeal generation + viability scoring
+│   │   │   ├── risk_service.py        # Hybrid risk scoring engine
+│   │   │   ├── pdf_service.py         # PyMuPDF text extraction
+│   │   │   ├── pdf_export_service.py  # ReportLab PDF generation
+│   │   │   ├── analytics_service.py   # Aggregation queries + benchmarks
+│   │   │   └── voice_service.py       # Whisper transcription + intent parsing
+│   │   ├── rag/
+│   │   │   ├── embedder.py            # Lazy-loaded sentence-transformers model
+│   │   │   ├── ingest.py              # Loads policy PDFs into ChromaDB
+│   │   │   ├── loader.py              # PDF text chunking
+│   │   │   ├── retriever.py           # Semantic search + custom reranker
+│   │   │   └── vectorstore.py         # ChromaDB persistent client
+│   │   ├── data/policies/             # Pre-loaded payer policy PDFs
+│   │   └── uploads/                   # Uploaded denial letter PDFs
+│   ├── mcp_server.py                  # Standalone MCP server wrapping all endpoints
+│   ├── chroma_db/                     # Persisted ChromaDB vector store
+│   ├── seed_demo_data.py              # Seeds 120 synthetic claims
+│   ├── run_ingest.py                  # Re-ingests policy PDFs into ChromaDB
+│   ├── test_denials/                  # Sample denial text files for testing
+│   ├── Procfile                       # Deployment process definition
+│   ├── render.yaml
+│   └── requirements.txt
 └── clairo-frontend/
     └── clairo-frontend/
         └── src/
             ├── App.jsx
-            ├── api.js           # All backend API calls
-            └── components/      # UploadPanel, ClaimDetails, AppealPanel, PolicyPanel, RiskHeatmap, AnalyticsPanel
+            ├── api.js                 # All backend API calls
+            └── components/
+                ├── UploadPanel.jsx
+                ├── ClaimDetails.jsx
+                ├── AppealPanel.jsx
+                ├── PolicyPanel.jsx
+                ├── RiskHeatmap.jsx
+                ├── AnalyticsPanel.jsx
+                ├── VoicePanel.jsx
+                └── ui.jsx
 ```
 
 ---
@@ -64,12 +101,18 @@ Create a `.env` file in `clairo-backend/`:
 GROQ_API_KEY=your_groq_api_key_here
 ```
 
+Optionally re-ingest the policy PDFs into ChromaDB (already pre-populated, only needed if you add new policy documents):
+```bash
+python run_ingest.py
+```
+
 Start the server:
 ```bash
 uvicorn app.main:app --reload
 ```
 
 Backend runs at **http://localhost:8000**
+Swagger UI at **http://localhost:8000/docs**
 
 ### Frontend
 
@@ -85,48 +128,117 @@ Frontend runs at **http://localhost:5173**
 
 ## Features
 
-### Upload & Extract
-Upload any insurance denial PDF. CLAIRO extracts payer, patient ID, CPT codes, denial reason, billed/denied amounts, and service date using LLM parsing.
+### 1. Upload & Extract
+Upload any insurance denial PDF. CLAIRO extracts payer, patient ID, CPT codes, denial reason, billed/denied amounts, and service date using LLM parsing, then immediately classifies the denial and scores its risk.
 
-### Claim Details
+### 2. Claim Details
 Displays all extracted fields alongside the denial classification (e.g. `medical_necessity`, `prior_authorization`) and a 0–100 risk score with risk level badge.
 
-### Appeal Letter Generator
-Generates a formal, citation-backed appeal letter grounded in retrieved payer policy evidence. Returns a confidence score, rationale, viability rating, and recovery probability estimate.
+### 3. Appeal Letter Generator
+Generates a formal, citation-backed appeal letter grounded in retrieved payer policy evidence. Returns a confidence score, rationale, viability rating, recovery probability, and the full letter text. The letter can be copied to clipboard or exported as a formatted, submission-ready PDF.
 
-### Policy Citation Retrieval
-Retrieves the most relevant policy chunks from the ChromaDB vector store for the claim's payer and CPT code combination, using enriched semantic queries and keyword reranking.
+### 4. PDF Export
+Downloads the generated appeal letter as a formatted PDF including a claim header (payer, patient ID, CPT codes, service date, denied amount) and an AI-assisted disclaimer. Requires an appeal letter to be generated first.
 
-### Denial Risk Heatmap
-Scores a queue of claims 0–100 for denial probability using a hybrid rule-based + LLM documentation analysis engine. Flags prior auth requirements, bundling risks, and documentation gaps.
+### 5. Policy Citation Retrieval
+Retrieves the most relevant policy chunks from the ChromaDB vector store for the claim's payer and CPT code combination, using enriched semantic queries and keyword reranking that prioritizes clinical criteria sections over boilerplate.
 
-### Analytics Dashboard
-Practice-level denial analytics including total denials, appeals generated, average risk score, denied revenue estimate, and denial rate vs. industry benchmark. Includes bar charts by payer and denial category.
+### 6. Denial Risk Heatmap
+Scores a queue of claims 0–100 for denial probability using a hybrid rule-based + LLM documentation analysis engine. Flags prior auth requirements, bundling risks, and documentation gaps. Supports both demo queue scoring and single-claim scoring from a real upload.
+
+### 7. Analytics Dashboard
+Practice-level denial analytics including total denials, appeals generated, average risk score, denied revenue estimate, and denial rate vs. industry benchmark. Includes four charts: denials by payer, denials by category, monthly denial trend, and denials by CPT code.
+
+### 8. Voice AI
+Accepts an audio file upload, transcribes it via Groq Whisper Large v3, extracts intent and claim fields using LLM parsing, and automatically routes to the correct backend endpoint. Supports `score_claim` and `check_analytics` intents, returning both a structured result and a plain-English voice response string.
+
+### 9. MCP Server
+A standalone Model Context Protocol server that exposes all CLAIRO tools so AI agents can autonomously orchestrate the complete denial-to-appeal pipeline without a human in the loop.
 
 ---
 
 ## Seeding Demo Data
 
-On first run, go to the **Analytics** tab and click **Seed Demo Data**. This inserts 120 synthetic denial claims across 5 payers and 6 denial categories.
+On first run, go to the **Analytics** tab and click **Seed Demo Data**. This inserts 120 synthetic denial claims across 5 payers and 6 denial categories so all four charts populate with meaningful data.
 
 ---
 
 ## API Endpoints
 
+### Core
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/upload` | Upload denial PDF, extract + classify + score |
-| POST | `/appeal/generate-from-claim` | Generate appeal letter from structured claim |
-| POST | `/export/viability` | Get appeal viability rating |
-| POST | `/export/export-pdf` | Export appeal letter as PDF |
-| GET | `/rag/retrieve` | Retrieve policy citations |
-| POST | `/risk/score-claim` | Score a single claim |
-| POST | `/risk/score-queue` | Score a batch of claims |
-| GET | `/analytics/summary` | Practice-level summary stats |
+| GET | `/` | Health check |
+
+### Upload & Extraction
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/upload` | Upload denial PDF — returns structured claim, classification, risk score |
+
+### Appeal
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/appeal/generate-appeal` | Generate appeal using hardcoded demo claim |
+| POST | `/appeal/generate-from-claim` | Generate appeal from real upload output |
+
+### Export
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/export/viability` | Get appeal viability rating and recovery probability |
+| POST | `/export/export-pdf` | Download formatted submission-ready appeal letter PDF |
+
+### RAG Retrieval
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/rag/retrieve` | Retrieve reranked policy chunks — params: `payer`, `cpt`, `denial_reason`, `classification` |
+
+### Risk Scoring
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/risk/score-claim` | Score single claim denial risk (0–100) |
+| POST | `/risk/score-queue` | Score batch of claims sorted by risk descending |
+
+### Analytics
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/analytics/seed` | Seed database with 120 demo claims |
+| GET | `/analytics/summary` | Practice stats with industry benchmark comparison |
 | GET | `/analytics/by-payer` | Denial counts by payer |
-| GET | `/analytics/by-classification` | Denial counts by category |
-| GET | `/analytics/by-month` | Denial trend by month |
-| POST | `/analytics/seed` | Seed demo data |
+| GET | `/analytics/by-cpt` | Denial counts by CPT code |
+| GET | `/analytics/by-classification` | Denial type distribution with percentages |
+| GET | `/analytics/by-month` | Month-over-month denial trend |
+
+### Voice AI
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/voice/process` | Upload audio file — transcribes, parses intent, routes to correct endpoint, returns result + voice_response string |
+
+### MCP Tools
+| Tool | Description |
+|------|-------------|
+| `score_claim` | Score a claim for denial risk |
+| `generate_appeal` | Generate citation-backed appeal letter |
+| `retrieve_policy` | Retrieve relevant payer policy sections |
+| `check_appeal_viability` | Get viability rating and recovery probability |
+| `get_analytics_summary` | Get practice analytics and benchmark comparison |
+| `run_full_pipeline` | Autonomously orchestrate policy retrieval + appeal generation + viability scoring in one call |
+
+---
+
+## Running the MCP Server
+
+In a separate terminal:
+
+```bash
+cd clairo-main/clairo-backend
+python mcp_server.py
+```
+
+To test with the MCP inspector:
+
+```bash
+npx @modelcontextprotocol/inspector python mcp_server.py
+```
 
 ---
 
@@ -144,3 +256,6 @@ On first run, go to the **Analytics** tab and click **Seed Demo Data**. This ins
 - The ChromaDB vector store is pre-populated with policy PDFs from `app/data/policies/`. To re-ingest, run `python run_ingest.py` from `clairo-backend/`.
 - All LLM calls use `llama-3.3-70b-versatile` via Groq. Voice transcription uses `whisper-large-v3`.
 - The SQLite database (`clairo.db`) is auto-created on first startup.
+- Every real denial upload automatically feeds the analytics dashboard.
+- The PDF export endpoint requires `appeal_letter`, `structured_claim`, `confidence_score`, and `classification` in the request body.
+```

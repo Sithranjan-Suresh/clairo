@@ -1,0 +1,7 @@
+Aetna denied CPT 27447 due to missing prior authorization.
+
+Patient ID: A77821
+
+Billed Amount: $7800
+Denied Amount: $7800
+Service Date: 2026-04-22

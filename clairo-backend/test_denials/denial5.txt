@@ -1,0 +1,7 @@
+Cigna denied CPT 45378 because the claim was submitted after the payer filing deadline.
+
+Patient ID: C88210
+
+Billed Amount: $2400
+Denied Amount: $2400
+Service Date: 2025-10-01

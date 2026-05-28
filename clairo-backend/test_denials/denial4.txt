@@ -1,0 +1,7 @@
+Humana denied claim due to inactive member coverage on the date of service.
+
+Patient ID: H55192
+
+Billed Amount: $1200
+Denied Amount: $1200
+Service Date: 2026-01-11

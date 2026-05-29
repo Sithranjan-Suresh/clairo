@@ -1,6 +1,3 @@
-Here's the full updated README reflecting everything implemented:
-
----
 
 # CLAIRO — Denial Intelligence Platform
 

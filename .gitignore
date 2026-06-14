@@ -1,0 +1,14 @@
+venv/
+.env
+__pycache__/
+*.pyc
+clairo.db
+
+# Frontend
+node_modules/
+dist/
+.env.local
+.env.*.local
+
+# Editor/OS
+.DS_Store

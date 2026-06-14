@@ -1,0 +1,8 @@
+UnitedHealthcare has denied CPT 29881 for patient P12345.
+
+Reason:
+Medical necessity was not established because documentation did not show two failed conservative treatments prior to surgery.
+
+Billed Amount: $4200
+Denied Amount: $4200
+Service Date: 2026-05-10

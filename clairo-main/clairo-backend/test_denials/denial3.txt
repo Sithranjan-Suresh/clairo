@@ -1,0 +1,7 @@
+Blue Cross Blue Shield of Texas denied CPT 93000 because modifier 59 was incorrectly applied.
+
+Patient ID: BC9921
+
+Billed Amount: $850
+Denied Amount: $850
+Service Date: 2026-03-14

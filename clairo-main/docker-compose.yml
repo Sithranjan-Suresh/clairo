@@ -1,0 +1,35 @@
+# CLAIRO — Docker Compose
+# Starts the FastAPI backend + Vite frontend together.
+# Uses InsForge Postgres when INSFORGE_DATABASE_URL is set; falls back to SQLite.
+#
+# Usage:
+#   cp clairo-backend/.env.example clairo-backend/.env   # fill in your keys
+#   docker compose up --build
+
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./clairo-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./clairo-backend/.env
+    volumes:
+      - ./clairo-backend/chroma_db:/app/chroma_db
+      - ./clairo-backend/app/uploads:/app/app/uploads
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./clairo-frontend/clairo-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

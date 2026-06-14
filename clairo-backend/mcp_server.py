@@ -1,10 +1,16 @@
+import json
+import os
+
 import httpx
 import asyncio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-BASE_URL = "https://web-production-ca7ed.up.railway.app"
+# Override with CLAIRO_API_BASE_URL to point at a local dev server
+# (e.g. http://127.0.0.1:8000) which has the full route set, including
+# /insforge/* and /api/prior-auth-check*, that may not be on every deployment.
+BASE_URL = os.getenv("CLAIRO_API_BASE_URL", "https://web-production-ca7ed.up.railway.app")
 
 app = Server("clairo-mcp")
 
@@ -154,101 +160,136 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+def _error_result(detail: str) -> list[TextContent]:
+    return [TextContent(type="text", text=json.dumps({"error": detail}, indent=2))]
+
+
+def _safe_json(response: httpx.Response, step: str):
+    """Parse a response as JSON, raising a clear error if the upstream
+    endpoint returned a non-JSON body (e.g. a plain-text 500/404 page)."""
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"{step} failed with HTTP {response.status_code}: {response.text[:300]}"
+        )
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{step} returned a non-JSON response: {response.text[:300]}"
+        ) from exc
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
 
-        if name == "score_claim":
-            response = await client.post(
-                f"{BASE_URL}/risk/score-claim",
-                json=arguments
-            )
-            return [TextContent(type="text", text=response.text)]
+            if name == "score_claim":
+                response = await client.post(
+                    f"{BASE_URL}/risk/score-claim",
+                    json=arguments
+                )
+                _safe_json(response, "score_claim")
+                return [TextContent(type="text", text=response.text)]
 
-        elif name == "generate_appeal":
-            response = await client.post(
-                f"{BASE_URL}/appeal/generate-from-claim",
-                json=arguments
-            )
-            return [TextContent(type="text", text=response.text)]
+            elif name == "generate_appeal":
+                response = await client.post(
+                    f"{BASE_URL}/appeal/generate-from-claim",
+                    json=arguments
+                )
+                _safe_json(response, "generate_appeal")
+                return [TextContent(type="text", text=response.text)]
 
-        elif name == "retrieve_policy":
-            response = await client.get(
-                f"{BASE_URL}/rag/retrieve",
-                params=arguments
-            )
-            return [TextContent(type="text", text=response.text)]
+            elif name == "retrieve_policy":
+                response = await client.get(
+                    f"{BASE_URL}/rag/retrieve",
+                    params=arguments
+                )
+                _safe_json(response, "retrieve_policy")
+                return [TextContent(type="text", text=response.text)]
 
-        elif name == "check_appeal_viability":
-            response = await client.post(
-                f"{BASE_URL}/export/viability",
-                json=arguments
-            )
-            return [TextContent(type="text", text=response.text)]
+            elif name == "check_appeal_viability":
+                response = await client.post(
+                    f"{BASE_URL}/export/viability",
+                    json=arguments
+                )
+                _safe_json(response, "check_appeal_viability")
+                return [TextContent(type="text", text=response.text)]
 
-        elif name == "get_analytics_summary":
-            response = await client.get(f"{BASE_URL}/analytics/summary")
-            return [TextContent(type="text", text=response.text)]
+            elif name == "get_analytics_summary":
+                response = await client.get(f"{BASE_URL}/analytics/summary")
+                _safe_json(response, "get_analytics_summary")
+                return [TextContent(type="text", text=response.text)]
 
+            elif name == "insforge_query":
+                response = await client.post(
+                    f"{BASE_URL}/insforge/agent-run",
+                    json=arguments
+                )
+                _safe_json(response, "insforge_query")
+                return [TextContent(type="text", text=response.text)]
 
-        elif name == "insforge_query":
-            response = await client.post(
-                f"{BASE_URL}/insforge/agent-run",
-                json=arguments
-            )
-            return [TextContent(type="text", text=response.text)]
+            elif name == "run_full_pipeline":
+                structured_claim = arguments["structured_claim"]
+                classification = arguments["classification"]
+                cpt_codes = structured_claim.get("cpt_codes", [])
+                cpt = cpt_codes[0] if cpt_codes else ""
+                payer = structured_claim.get("payer", "")
+                denial_reason = structured_claim.get("denial_reason", "")
 
-        elif name == "run_full_pipeline":
-            structured_claim = arguments["structured_claim"]
-            classification = arguments["classification"]
-            cpt_codes = structured_claim.get("cpt_codes", [])
-            cpt = cpt_codes[0] if cpt_codes else ""
-            payer = structured_claim.get("payer", "")
-            denial_reason = structured_claim.get("denial_reason", "")
+                # Step 1: Retrieve policy
+                policy_response = await client.get(
+                    f"{BASE_URL}/rag/retrieve",
+                    params={
+                        "payer": payer,
+                        "cpt": cpt,
+                        "denial_reason": denial_reason,
+                        "classification": classification
+                    }
+                )
+                policy_data = _safe_json(policy_response, "run_full_pipeline:retrieve_policy")
 
-            # Step 1: Retrieve policy
-            policy_response = await client.get(
-                f"{BASE_URL}/rag/retrieve",
-                params={
-                    "payer": payer,
-                    "cpt": cpt,
-                    "denial_reason": denial_reason,
-                    "classification": classification
+                # Step 2: Generate appeal
+                appeal_response = await client.post(
+                    f"{BASE_URL}/appeal/generate-from-claim",
+                    json={
+                        "structured_claim": structured_claim,
+                        "classification": classification
+                    }
+                )
+                appeal_data = _safe_json(appeal_response, "run_full_pipeline:generate_appeal")
+                confidence_score = appeal_data.get("confidence_score", 70)
+
+                # Step 3: Check viability
+                viability_response = await client.post(
+                    f"{BASE_URL}/export/viability",
+                    json={
+                        "confidence_score": confidence_score,
+                        "classification": classification,
+                        "payer": payer
+                    }
+                )
+                viability_data = _safe_json(viability_response, "run_full_pipeline:check_appeal_viability")
+
+                result = {
+                    "pipeline": "complete",
+                    "policy_evidence": policy_data,
+                    "appeal": appeal_data,
+                    "viability": viability_data,
                 }
-            )
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
-            # Step 2: Generate appeal
-            appeal_response = await client.post(
-                f"{BASE_URL}/appeal/generate-from-claim",
-                json={
-                    "structured_claim": structured_claim,
-                    "classification": classification
-                }
-            )
-            appeal_data = appeal_response.json()
-            confidence_score = appeal_data.get("confidence_score", 70)
+            else:
+                return _error_result(f"Unknown tool: {name}")
 
-            # Step 3: Check viability
-            viability_response = await client.post(
-                f"{BASE_URL}/export/viability",
-                json={
-                    "confidence_score": confidence_score,
-                    "classification": classification,
-                    "payer": payer
-                }
-            )
-
-            import json
-            result = {
-                "pipeline": "complete",
-                "policy_evidence": policy_response.json(),
-                "appeal": appeal_data,
-                "viability": viability_response.json()
-            }
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-        else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    except httpx.HTTPError as exc:
+        return _error_result(f"Request to CLAIRO backend ({BASE_URL}) failed: {exc}")
+    except KeyError as exc:
+        return _error_result(f"Missing required argument: {exc}")
+    except RuntimeError as exc:
+        return _error_result(str(exc))
+    except Exception as exc:
+        return _error_result(f"Unexpected error in tool '{name}': {exc}")
 
 
 async def main():

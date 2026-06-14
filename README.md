@@ -180,11 +180,32 @@ Go to the **Analytics** tab → click **Seed Demo Data**. This inserts 120 synth
 cd clairo-main/clairo-backend
 python mcp_server.py
 
-# Test with the MCP inspector:
+# Test with the MCP inspector (run from inside clairo-backend so the
+# filename resolves correctly — no path prefix needed):
 npx @modelcontextprotocol/inspector python mcp_server.py
 ```
 
+> **Note:** Run the inspector command from inside `clairo-backend`. If you pass a
+> path like `clairo-backend/mcp_server.py` from a different working directory, some
+> shells/inspector versions mis-join it (e.g. `clairo-backendmcp_server.py`) and
+> you'll get a "can't open file" error.
+
 The MCP server exposes 7 tools including `insforge_query`, which lets any MCP-compatible AI agent (Claude, Cursor, Copilot) query the InsForge database directly before running denial analysis.
+
+By default the server talks to the deployed CLAIRO API. To point it at your local
+backend instead (e.g. `http://127.0.0.1:8000`, useful for routes like `/insforge/*`
+that may not exist on every deployment), set:
+
+```bash
+# Mac/Linux
+export CLAIRO_API_BASE_URL=http://127.0.0.1:8000
+
+# Windows (PowerShell)
+$env:CLAIRO_API_BASE_URL = "http://127.0.0.1:8000"
+```
+
+All tool calls now return structured `{"error": "..."}` JSON instead of crashing
+the MCP connection if the backend is unreachable or returns an unexpected response.
 
 ---
 

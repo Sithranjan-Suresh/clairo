@@ -68,18 +68,25 @@ RETRIEVED POLICY EVIDENCE:
 {policy_text}
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        temperature=0.2
-    )
-
-    content = response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2
+        )
+        content = response.choices[0].message.content
+    except Exception as exc:
+        return {
+            "appeal_letter": "Unable to generate appeal letter — the AI model call failed. "
+            "Please retry or review the claim manually.",
+            "confidence_score": 0,
+            "confidence_rationale": f"LLM call failed: {exc}",
+        }
 
     print("\n--- APPEAL RAW OUTPUT ---\n")
     print(content)

@@ -4,6 +4,21 @@ __pycache__/
 *.pyc
 clairo.db
 
+# InsForge & AI agent skills (local config, not for version control)
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
+
 # Frontend
 node_modules/
 dist/

@@ -4,25 +4,10 @@ React + Vite frontend for the CLAIRO denial intelligence platform.
 
 ## Quick Start
 
-### 1. Start the backend (in `clairo-main/`)
+### 1. Start the backend (in `clairo-backend/`, see root README for full setup)
 ```bash
-cd clairo-main
-pip install -r requirements.txt
+cd ../../clairo-backend
 uvicorn app.main:app --reload --port 8000
-```
-
-**Important — add CORS to the backend.**  
-In `app/main.py`, add these lines right after `app = FastAPI(...)`:
-
-```python
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 ```
 
 ### 2. Start the frontend (in this folder)

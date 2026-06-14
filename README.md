@@ -93,8 +93,7 @@ CLAIRO uses [InsForge](https://insforge.dev) as its agent-native cloud database.
 # Install and authenticate the InsForge CLI (always via npx)
 npx @insforge/cli login
 
-# Link this directory to your InsForge project
-cd clairo-main
+# From the repo root, link this directory to your InsForge project
 npx @insforge/cli link
 
 # Verify
@@ -122,7 +121,7 @@ npx @insforge/cli db connection-string
 ### Step 2 — Backend
 
 ```bash
-cd clairo-main/clairo-backend
+cd clairo-backend
 python -m venv venv
 
 # Activate
@@ -159,7 +158,7 @@ uvicorn app.main:app --reload
 ### Step 3 — Frontend
 
 ```bash
-cd clairo-main/clairo-frontend/clairo-frontend
+cd clairo-frontend/clairo-frontend
 npm install
 npm run dev
 ```
@@ -177,7 +176,7 @@ Go to the **Analytics** tab → click **Seed Demo Data**. This inserts 120 synth
 ### Step 5 — MCP Server (optional, for agent use)
 
 ```bash
-cd clairo-main/clairo-backend
+cd clairo-backend
 python mcp_server.py
 
 # Test with the MCP inspector (run from inside clairo-backend so the
@@ -212,7 +211,7 @@ the MCP connection if the backend is unreachable or returns an unexpected respon
 ### Docker (optional)
 
 ```bash
-cd clairo-main
+# From the repo root
 cp clairo-backend/.env.example clairo-backend/.env  # fill in keys
 docker compose up --build
 ```
@@ -225,7 +224,7 @@ docker compose up --build
 ## Project Structure
 
 ```
-clairo-main/
+clairo/                                  # repo root
 ├── docker-compose.yml
 ├── migrations/
 │   └── 001_create_denial_claims.sql    # InsForge DB migration

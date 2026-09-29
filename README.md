@@ -2,7 +2,7 @@
 
 > AI-powered insurance denial management, built on InsForge's agent-native cloud database.
 
-**Live demo:** [clairo-frontend.vercel.app](https://clairo-frontend.vercel.app) · Backend API: [clairo-4bgp.onrender.com](https://clairo-4bgp.onrender.com) ([Swagger docs](https://clairo-4bgp.onrender.com/docs))
+**Live demo:** [clairo-claims.vercel.app](https://clairo-claims.vercel.app) · Backend API: [clairo-4bgp.onrender.com](https://clairo-4bgp.onrender.com) ([Swagger docs](https://clairo-4bgp.onrender.com/docs))
 
 > The backend is on Render's free tier and spins down after ~15 min idle — the first request after a quiet period can take 30-60s to cold-start. That's expected, not a bug.
 

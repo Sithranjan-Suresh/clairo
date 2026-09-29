@@ -6,7 +6,10 @@ services:
     # app/data/policies/ — it's not committed to the repo, so every deploy
     # regenerates it fresh from source.
     buildCommand: pip install -r requirements.txt && python run_ingest.py
-    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port 10000
+    # Render assigns the actual listening port via $PORT at runtime — a
+    # hardcoded port here can silently fail Render's health check and leave
+    # the deploy stuck "in progress" even after a successful build.
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GROQ_API_KEY
         sync: false

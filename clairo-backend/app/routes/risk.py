@@ -1,8 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from app.limiter import limiter
 from app.services.risk_service import score_claim
 
 router = APIRouter()
+
+MAX_QUEUE_SIZE = 25  # each claim triggers its own Groq call — cap batch cost
 
 
 # ─────────────────────────────────────────
@@ -24,15 +27,16 @@ class ClaimQueueRequest(BaseModel):
 # ─────────────────────────────────────────
 
 @router.post("/score-claim")
-def score_single_claim(request: RiskScoreRequest):
+@limiter.limit("20/minute")
+def score_single_claim(request: Request, payload: RiskScoreRequest):
     """
     Takes a single claim and returns a 0–100 risk score
     with rule flags and remediation recommendation.
     """
     result = score_claim(
-        cpt_codes=request.cpt_codes,
-        payer=request.payer,
-        documentation_notes=request.documentation_notes
+        cpt_codes=payload.cpt_codes,
+        payer=payload.payer,
+        documentation_notes=payload.documentation_notes
     )
     return result
 
@@ -42,14 +46,22 @@ def score_single_claim(request: RiskScoreRequest):
 # ─────────────────────────────────────────
 
 @router.post("/score-queue")
-def score_claim_queue(request: ClaimQueueRequest):
+@limiter.limit("5/minute")
+def score_claim_queue(request: Request, payload: ClaimQueueRequest):
     """
     Takes a list of claims and returns risk scores for all of them.
     Sorted by risk_score descending so highest-risk claims surface first.
     """
+    if len(payload.claims) > MAX_QUEUE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many claims in one request (max {MAX_QUEUE_SIZE}). "
+            "Split into smaller batches.",
+        )
+
     results = []
 
-    for i, claim in enumerate(request.claims):
+    for i, claim in enumerate(payload.claims):
         result = score_claim(
             cpt_codes=claim.cpt_codes,
             payer=claim.payer,

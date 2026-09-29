@@ -3,9 +3,10 @@ import logging
 import re
 from typing import List, Optional, Union
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
+from app.limiter import limiter
 from app.rag.retriever import retrieve_policy
 from app.services.groq_services import client
 from app.services.prior_auth_document_service import (
@@ -331,19 +332,20 @@ RETRIEVED PAYER POLICY EVIDENCE:
 
 
 @router.post("/prior-auth-check")
-async def prior_auth_check(request: PriorAuthRequest):
-    if not request.payer.strip():
+@limiter.limit("10/minute")
+async def prior_auth_check(request: Request, payload: PriorAuthRequest):
+    if not payload.payer.strip():
         raise HTTPException(status_code=400, detail="Payer is required.")
-    if not request.cpt_codes:
+    if not payload.cpt_codes:
         raise HTTPException(status_code=400, detail="At least one CPT code is required.")
-    if not request.clinical_notes.strip():
+    if not payload.clinical_notes.strip():
         raise HTTPException(status_code=400, detail="Clinical notes are required.")
 
-    cpt = request.cpt_codes[0]
+    cpt = payload.cpt_codes[0]
 
     try:
         retrieved = retrieve_policy(
-            payer=request.payer,
+            payer=payload.payer,
             query="",
             top_k=4,
             classification="prior_authorization",
@@ -369,7 +371,7 @@ async def prior_auth_check(request: PriorAuthRequest):
     )
 
     prompt = f"""
-You are a prior authorization specialist reviewing a real clinical case for submission to {request.payer}.
+You are a prior authorization specialist reviewing a real clinical case for submission to {payload.payer}.
 
 STRICT RULES:
 - Only cite criteria EXPLICITLY stated in the RETRIEVED POLICY EVIDENCE below
@@ -378,7 +380,7 @@ STRICT RULES:
 - If a specific policy criterion cannot be found in the evidence, write: "Policy not retrieved — verify manually"
 
 TASK:
-1. Identify whether prior authorization is required for CPT {", ".join(request.cpt_codes)} under this payer's policy
+1. Identify whether prior authorization is required for CPT {", ".join(payload.cpt_codes)} under this payer's policy
 2. List each specific PA criterion from the policy as its own requirement object
 3. For each criterion, check whether the clinical notes satisfy it — quote the supporting text if present
 4. Flag any criterion the notes do NOT address as missing
@@ -403,12 +405,12 @@ FORMAT:
   "policy_source": "<source document name from the evidence>"
 }}
 
-PAYER: {request.payer}
-CPT CODES: {", ".join(request.cpt_codes)}
-DIAGNOSIS CODES: {", ".join(request.diagnosis_codes)}
+PAYER: {payload.payer}
+CPT CODES: {", ".join(payload.cpt_codes)}
+DIAGNOSIS CODES: {", ".join(payload.diagnosis_codes)}
 
 CLINICAL NOTES:
-{request.clinical_notes}
+{payload.clinical_notes}
 
 RETRIEVED POLICY EVIDENCE:
 {policy_text}
@@ -448,17 +450,19 @@ RETRIEVED POLICY EVIDENCE:
         packet["documentation_present"] = []
 
     return {
-        "payer": request.payer,
+        "payer": payload.payer,
         "cpt_code": cpt,
-        "cpt_codes": request.cpt_codes,
-        "diagnosis_codes": request.diagnosis_codes,
+        "cpt_codes": payload.cpt_codes,
+        "diagnosis_codes": payload.diagnosis_codes,
         "policy_source": policy_source,
         "packet": packet,
     }
 
 
 @router.post("/prior-auth-check-documents")
+@limiter.limit("5/minute")
 async def prior_auth_check_documents(
+    request: Request,
     payer: str = Form(...),
     cpt_codes: str = Form(...),
     diagnosis_codes: str = Form(""),

@@ -18,7 +18,9 @@ services:
     env_file:
       - ./clairo-backend/.env
     volumes:
-      - ./clairo-backend/chroma_db:/app/chroma_db
+      # Not mounting chroma_db: the image builds its own index via
+      # run_ingest.py (see Dockerfile) and a host-mounted empty/stale
+      # directory would shadow it at container start.
       - ./clairo-backend/app/uploads:/app/app/uploads
     restart: unless-stopped
 

@@ -10,9 +10,10 @@ Exposes endpoints that demonstrate CLAIRO's InsForge-powered backend:
                                  showing both layers working together in one call.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from sqlalchemy import text
 from app.database import SessionLocal, engine, DATABASE_URL
+from app.limiter import limiter
 from app.models import DenialClaim
 from app.services.groq_services import client
 from sqlalchemy import func
@@ -135,7 +136,8 @@ class AgentRunRequest(BaseModel):
 
 
 @router.post("/agent-run")
-def insforge_agent_run(request: AgentRunRequest):
+@limiter.limit("10/minute")
+def insforge_agent_run(request: Request, payload: AgentRunRequest):
     """
     Autonomous denial intelligence agent.
 
@@ -152,7 +154,7 @@ def insforge_agent_run(request: AgentRunRequest):
         total_claims = db.query(func.count(DenialClaim.id)).scalar() or 0
 
         # Most-denied payer
-        payer_filter = request.payer
+        payer_filter = payload.payer
         payer_stats = None
         if payer_filter:
             count = (
@@ -194,14 +196,14 @@ def insforge_agent_run(request: AgentRunRequest):
             "total_claims_in_insforge_db": total_claims,
             "payer_stats": payer_stats,
             "recent_high_risk_claims": high_risk_context,
-            "cpt_codes_of_interest": request.cpt_codes,
+            "cpt_codes_of_interest": payload.cpt_codes,
         }, indent=2)
 
         prompt = f"""You are CLAIRO's autonomous denial intelligence agent.
 You have live access to InsForge Postgres (CLAIRO's cloud database) and you've
 just queried it for context. Use that data to answer the user's question.
 
-USER QUERY: {request.query}
+USER QUERY: {payload.query}
 
 LIVE DATA FROM INSFORGE POSTGRES:
 {db_context_str}
@@ -240,7 +242,7 @@ Return ONLY valid JSON:
             }
 
         return {
-            "query": request.query,
+            "query": payload.query,
             "insforge_context": {
                 "total_claims": total_claims,
                 "payer_stats": payer_stats,

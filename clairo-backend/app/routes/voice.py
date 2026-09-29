@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
+from app.limiter import limiter
 from app.services.voice_service import (
     VoiceProcessingError,
     transcribe_audio,
@@ -14,7 +15,8 @@ MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 @router.post("/process")
-async def process_voice(file: UploadFile = File(...)):
+@limiter.limit("10/minute")
+async def process_voice(request: Request, file: UploadFile = File(...)):
 
     audio_bytes = await file.read()
     if len(audio_bytes) > MAX_AUDIO_BYTES:

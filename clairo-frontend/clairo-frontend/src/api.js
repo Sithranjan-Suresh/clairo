@@ -76,9 +76,15 @@ export async function getAnalyticsSummary() {
   return res.json();
 }
 
-// Seed demo data
+// Seed demo data. VITE_ADMIN_API_KEY is optional — only needed when the
+// backend has ADMIN_API_KEY set (recommended for any public deployment,
+// since this endpoint wipes and reseeds the claims table).
 export async function seedDemoData() {
-  const res = await fetch(`${API_BASE_URL}/analytics/seed?force=true`, { method: "POST" });
+  const adminKey = import.meta.env.VITE_ADMIN_API_KEY;
+  const res = await fetch(`${API_BASE_URL}/analytics/seed?force=true`, {
+    method: "POST",
+    headers: adminKey ? { "X-Admin-Key": adminKey } : undefined,
+  });
   if (!res.ok) throw new Error(`Seed failed: ${res.status} ${res.statusText}`);
   return res.json();
 }

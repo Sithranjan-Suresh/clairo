@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 PREVIEW_CHARS = 1200
 DOCX_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+MAX_FILE_BYTES = 15 * 1024 * 1024  # 15 MB per file
+MAX_TOTAL_BYTES = 40 * 1024 * 1024  # 40 MB across all files in one request
 
 
 def clean_display_name(raw: str) -> str:
@@ -110,6 +112,8 @@ async def process_uploaded_documents(files: List[UploadFile]) -> tuple[List[dict
     if not files:
         return documents, warnings
 
+    total_bytes = 0
+
     for upload in files:
         filename = upload.filename or "document.pdf"
         suffix = os.path.splitext(filename)[1] or ".pdf"
@@ -118,6 +122,17 @@ async def process_uploaded_documents(files: List[UploadFile]) -> tuple[List[dict
             content = await upload.read()
             if not content:
                 warnings.append(f"{filename}: file was empty.")
+                continue
+
+            if len(content) > MAX_FILE_BYTES:
+                warnings.append(f"{filename}: file too large (max 15 MB), skipped.")
+                continue
+
+            total_bytes += len(content)
+            if total_bytes > MAX_TOTAL_BYTES:
+                warnings.append(
+                    f"{filename}: skipped — total upload size exceeds the 40 MB limit."
+                )
                 continue
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:

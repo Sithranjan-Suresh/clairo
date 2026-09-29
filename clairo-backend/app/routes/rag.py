@@ -1,11 +1,13 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from app.limiter import limiter
 from app.rag.retriever import retrieve_policy
 
 router = APIRouter()
 
 
 @router.get("/retrieve")
-def retrieve(payer: str, cpt: str, denial_reason: str, classification: str = ""):
+@limiter.limit("30/minute")
+def retrieve(request: Request, payer: str, cpt: str, denial_reason: str, classification: str = ""):
     results = retrieve_policy(
         payer=payer,
         query="",

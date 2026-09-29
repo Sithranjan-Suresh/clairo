@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+import os
+
+from fastapi import APIRouter, Header, HTTPException, Request
+from app.limiter import limiter
 from app.services.analytics_service import (
     get_denials_by_payer,
     get_denials_by_cpt,
@@ -14,8 +17,26 @@ from datetime import datetime, timedelta
 router = APIRouter()
 
 
+def _require_admin(x_admin_key: str | None) -> None:
+    """Gate destructive/demo-data endpoints behind an admin key in
+    production. If ADMIN_API_KEY isn't set (local/dev), the check is
+    skipped so the existing dev workflow keeps working — but any real
+    deployment should set it, since this endpoint wipes and reseeds the
+    entire claims table and is otherwise reachable by anyone on the
+    internet."""
+    admin_key = os.getenv("ADMIN_API_KEY")
+    if admin_key and x_admin_key != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid or missing admin key.")
+
+
 @router.post("/seed")
-def seed_demo_data(force: bool = False):  # CHANGED: added force param
+@limiter.limit("3/minute")
+def seed_demo_data(
+    request: Request,
+    force: bool = False,
+    x_admin_key: str | None = Header(default=None),
+):
+    _require_admin(x_admin_key)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
 

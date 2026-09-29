@@ -360,6 +360,51 @@ Adding a policy: drop the PDF in `app/data/policies/`, add one line to `run_inge
 | `GROQ_API_KEY` | **Yes** | Groq API key for LLM and Whisper |
 | `INSFORGE_DATABASE_URL` | Recommended | InsForge Postgres connection string. Falls back to SQLite if unset. |
 | `CHROMA_PATH` | No | ChromaDB storage path (default: `chroma_db`) |
+| `ADMIN_API_KEY` | Recommended for prod | Gates `POST /analytics/seed` (wipes + reseeds all claims) behind an `X-Admin-Key` header. Unset = open in dev. |
+| `CORS_ORIGINS` | Recommended for prod | Comma-separated extra allowed frontend origins. |
+| `LOG_LEVEL` | No | Python logging level (default: `INFO`). |
+
+Frontend (`clairo-frontend/clairo-frontend/.env`):
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VITE_API_URL` | **Yes** | Backend base URL. |
+| `VITE_ADMIN_API_KEY` | Only if backend sets `ADMIN_API_KEY` | Must match it, or "Seed Demo Data" gets a 403. |
+
+---
+
+## Production Deployment
+
+CLAIRO ships with `render.yaml` (backend) and a static-build frontend that works on Vercel/Netlify. Before pointing real users at a deployment:
+
+### Safety measures already built in
+- **Rate limiting** (`slowapi`, in-memory per-IP): every LLM-backed endpoint is capped — uploads and appeal generation at 10/min, prior-auth and voice at 5–10/min, analytics seeding at 3/min, everything else at a 60/min default. Exceeding a limit returns `429`.
+- **Admin-gated destructive endpoint** — `POST /analytics/seed` wipes and reseeds the entire claims table. Set `ADMIN_API_KEY` in production so only requests carrying the matching `X-Admin-Key` header can call it.
+- **Upload hardening** — server-generated filenames (no path traversal), PDF-only content-type check, 15MB size caps on PDFs and prior-auth documents, 20MB on voice audio, and a batch cap (25 claims) on the risk-queue endpoint so one request can't trigger unbounded Groq calls.
+- **Request size guard** — a global middleware rejects JSON bodies over 2MB before they're parsed.
+- **Security headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` on every response.
+- **CORS** — explicit origin allowlist (`CORS_ORIGINS`) plus a regex for common preview-hosting subdomains; `allow_credentials` is `False` since the app never uses cookies, so the broad regex carries no session-leakage risk.
+- **Fail-loud config** — the backend logs a critical warning at startup if `GROQ_API_KEY` is missing, instead of failing mysteriously on the first request.
+
+### Known limitations to weigh before a public launch
+- There is no user authentication — anyone with the URL can use every feature (subject to the rate limits above). Fine for a demo/portfolio deployment; add real auth before handling real patient data.
+- `analytics_service.get_summary_stats()` includes a few illustrative constants (e.g. `practice_denial_rate`) rather than figures computed from real submitted-claims volume, since that data isn't tracked. Labeled here so it's not mistaken for a live metric.
+- Uploaded PDFs and prior-auth documents accumulate on disk indefinitely; add a retention/cleanup job if deploying somewhere with persistent storage.
+- This handles PHI-shaped data (patient IDs, clinical notes) without encryption-at-rest guarantees beyond whatever the InsForge/Postgres provider offers — don't feed it real patient data without a proper compliance review.
+
+### Deploying
+
+**Backend (Render):**
+```bash
+# From the repo root, push to GitHub, then in Render:
+# New > Web Service > connect this repo > set Root Directory to clairo-backend
+# render.yaml is auto-detected and handles the build/start commands.
+```
+Set `GROQ_API_KEY`, `ADMIN_API_KEY`, `INSFORGE_DATABASE_URL`, and `CORS_ORIGINS` (your frontend's exact URL) in Render's environment tab.
+
+**Frontend (Vercel/Netlify):** set the project root to `clairo-frontend/clairo-frontend`, build command `npm run build`, output directory `dist`. Set `VITE_API_URL` to your deployed backend URL and `VITE_ADMIN_API_KEY` to match `ADMIN_API_KEY` if you set one.
+
+After both are live, update the backend's `CORS_ORIGINS` to the frontend's real URL (the wildcard regex covers preview URLs, but pin the production one explicitly).
 
 ---
 

@@ -1,8 +1,9 @@
 import os
 import uuid
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException
 from app.services.pdf_service import extract_text_from_pdf
 
+from app.limiter import limiter
 from app.services.extraction_service import extract_claim_data
 from app.services.classification_service import classify_denial
 from app.services.risk_service import score_claim
@@ -19,7 +20,8 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 
 
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+@limiter.limit("10/minute")
+async def upload_pdf(request: Request, file: UploadFile = File(...)):
 
     if not (file.filename or "").lower().endswith(".pdf") or file.content_type not in (
         "application/pdf",

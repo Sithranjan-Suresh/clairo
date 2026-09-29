@@ -2,8 +2,15 @@ services:
   - type: web
     name: clairo-api
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    # run_ingest.py rebuilds the ChromaDB policy index from the PDFs in
+    # app/data/policies/ — it's not committed to the repo, so every deploy
+    # regenerates it fresh from source.
+    buildCommand: pip install -r requirements.txt && python run_ingest.py
     startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: GROQ_API_KEY
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
         sync: false

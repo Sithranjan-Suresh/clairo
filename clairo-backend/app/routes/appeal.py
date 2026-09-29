@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from app.limiter import limiter
 from app.services.appeal_service import generate_appeal
 from app.rag.retriever import retrieve_policy
 from pydantic import BaseModel
@@ -7,7 +8,8 @@ router = APIRouter()
 
 
 @router.post("/generate-appeal")
-def generate():
+@limiter.limit("10/minute")
+def generate(request: Request):
 
     structured_claim = {
         "payer": "UHC",
@@ -47,25 +49,26 @@ class AppealRequest(BaseModel):
 
 
 @router.post("/generate-from-claim")
-def generate_from_claim(request: AppealRequest):
+@limiter.limit("10/minute")
+def generate_from_claim(request: Request, payload: AppealRequest):
 
-    cpt_codes = request.structured_claim.get("cpt_codes", [])
+    cpt_codes = payload.structured_claim.get("cpt_codes", [])
     cpt = cpt_codes[0] if cpt_codes else ""
-    denial_reason = request.structured_claim.get("denial_reason", "")
-    payer = request.structured_claim.get("payer", "")
+    denial_reason = payload.structured_claim.get("denial_reason", "")
+    payer = payload.structured_claim.get("payer", "")
 
     retrieved = retrieve_policy(
         payer=payer,
         query="",
         top_k=3,
-        classification=request.classification,
+        classification=payload.classification,
         cpt=cpt,
         denial_reason=denial_reason
     )
 
     result = generate_appeal(
-        structured_claim=request.structured_claim,
-        classification=request.classification,
+        structured_claim=payload.structured_claim,
+        classification=payload.classification,
         retrieved_policies=retrieved
     )
 

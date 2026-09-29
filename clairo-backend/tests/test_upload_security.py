@@ -3,11 +3,21 @@ import os
 from unittest.mock import patch
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
+from app.limiter import limiter
 from app.routes.upload import router as upload_router, UPLOAD_FOLDER
 
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(
+    RateLimitExceeded,
+    lambda request, exc: JSONResponse(status_code=429, content={"error": "rate limited"}),
+)
+app.add_middleware(SlowAPIMiddleware)
 app.include_router(upload_router)
 client = TestClient(app)
 

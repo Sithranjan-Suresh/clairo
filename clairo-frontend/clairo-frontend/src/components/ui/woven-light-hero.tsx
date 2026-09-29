@@ -18,24 +18,14 @@ export interface WovenLightHeroProps {
 }
 
 export function WovenLightHero({ onExplore }: WovenLightHeroProps) {
-  const textControls = useAnimation();
   const buttonControls = useAnimation();
 
   useEffect(() => {
-    textControls.start((i) => ({
-      opacity: 1,
-      y: 0,
-      transition: {
-        delay: (i as number) * 0.1 + 1.5,
-        duration: 1.2,
-        ease: [0.2, 0.65, 0.3, 0.9],
-      },
-    }));
     buttonControls.start({
       opacity: 1,
-      transition: { delay: 2.5, duration: 1 },
+      transition: { delay: 0.3, duration: 0.6 },
     });
-  }, [textControls, buttonControls]);
+  }, [buttonControls]);
 
   return (
     <div className="relative flex h-screen w-full flex-col overflow-hidden bg-black">
@@ -64,30 +54,11 @@ export function WovenLightHero({ onExplore }: WovenLightHeroProps) {
             }}
           >
             <span className="brand-mark woven-hero__brand-mark">
-              <motion.span
-                className="brand-mark__text"
-                custom={0}
-                initial={{ opacity: 0, y: 50 }}
-                animate={textControls}
-              >
-                CL
-              </motion.span>
-              <motion.span
-                custom={1}
-                initial={{ opacity: 0, y: 50 }}
-                animate={textControls}
-                className="brand-mark__logo-wrap"
-              >
+              <span className="brand-mark__text">CL</span>
+              <span className="brand-mark__logo-wrap">
                 <ClairoLogo inline />
-              </motion.span>
-              <motion.span
-                className="brand-mark__text"
-                custom={2}
-                initial={{ opacity: 0, y: 50 }}
-                animate={textControls}
-              >
-                IRO
-              </motion.span>
+              </span>
+              <span className="brand-mark__text">IRO</span>
             </span>
           </h1>
 
@@ -96,16 +67,10 @@ export function WovenLightHero({ onExplore }: WovenLightHeroProps) {
           >
             <p className="font-body mx-auto max-w-2xl text-base font-normal leading-relaxed text-slate-300 md:text-lg">
               {SUBHEADLINE_PHRASES.map((phrase, index) => (
-                <motion.span
-                  key={phrase}
-                  custom={3 + index}
-                  initial={{ opacity: 0, y: 50 }}
-                  animate={textControls}
-                  className="inline-block"
-                >
+                <span key={phrase} className="inline-block">
                   {phrase}
                   {index < SUBHEADLINE_PHRASES.length - 1 ? " " : ""}
-                </motion.span>
+                </span>
               ))}
             </p>
           </div>

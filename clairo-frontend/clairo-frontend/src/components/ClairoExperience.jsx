@@ -30,10 +30,10 @@ const LETTERS = [
   { char: "O", mergeX: -138 },
 ];
 
-const COLLAPSE_MS = 800;
-const REVEAL_MS = 600;
-const SHADER_MS = 2500;
-const FADE_MS = 1300;
+const COLLAPSE_MS = 300;
+const REVEAL_MS = 250;
+const SHADER_MS = 950;
+const FADE_MS = 500;
 
 const collapseEase = [0.42, 0, 0.58, 1];
 const revealEase = [0.4, 0, 0.2, 1];

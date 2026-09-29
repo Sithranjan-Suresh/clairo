@@ -2,6 +2,10 @@
 
 > AI-powered insurance denial management, built on InsForge's agent-native cloud database.
 
+**Live demo:** [clairo-frontend.vercel.app](https://clairo-frontend.vercel.app) · Backend API: [clairo-4bgp.onrender.com](https://clairo-4bgp.onrender.com) ([Swagger docs](https://clairo-4bgp.onrender.com/docs))
+
+> The backend is on Render's free tier and spins down after ~15 min idle — the first request after a quiet period can take 30-60s to cold-start. That's expected, not a bug.
+
 CLAIRO is a full-stack AI platform that helps healthcare providers fight insurance denials. It parses denial PDFs, classifies denials, scores claim risk, runs prior authorization pre-checks against real payer policies, generates citation-backed appeal letters via Groq LLMs, and exposes every tool via an MCP server so AI agents can autonomously orchestrate the full denial-to-appeal pipeline.
 
 **InsForge is CLAIRO's persistent memory.** Every denial processed, every risk score computed, and every appeal generated is stored in InsForge Postgres — giving CLAIRO agents real historical context before they act, and giving the practice a live, queryable record of their entire denial history.
@@ -15,9 +19,10 @@ CLAIRO is a full-stack AI platform that helps healthcare providers fight insuran
 | **Database** | **InsForge** (managed Postgres) — agent-native, MCP-accessible |
 | **Backend** | FastAPI + SQLAlchemy + ChromaDB |
 | **LLM / Voice** | Groq — LLaMA 3.3 70B + Whisper Large v3 |
-| **Vector Search** | Sentence Transformers + ChromaDB (20+ real payer PDFs) |
+| **Vector Search** | ChromaDB with its built-in ONNX MiniLM-L6-v2 embedder (20+ real payer PDFs) — deliberately not sentence-transformers/PyTorch, which is 300-500MB heavier at runtime for the same model |
 | **MCP Server** | 7 tools including `insforge_query` for live DB access |
 | **Frontend** | React 19 + Vite + Recharts |
+| **Deployment** | Render (backend) + Vercel (frontend), rate-limited (slowapi) with an admin-gated seed endpoint |
 
 ---
 
@@ -177,6 +182,11 @@ Frontend: **http://localhost:5173**
 ### Step 4 — Seed Demo Data (optional)
 
 Go to the **Analytics** tab → click **Seed Demo Data**. This inserts 120 synthetic denial claims into InsForge Postgres and populates all charts. The **InsForge** tab will immediately show a live feed of those claims.
+
+This button only works when the backend's `ADMIN_API_KEY` (if set) matches the frontend's `VITE_ADMIN_API_KEY`. **Don't set `VITE_ADMIN_API_KEY` on a public deployment** — any `VITE_`-prefixed variable is baked into the public JS bundle, so it would no longer be a secret. Seed a public deployment from the command line instead:
+```bash
+curl -X POST "https://<your-backend>/analytics/seed?force=true" -H "X-Admin-Key: <your ADMIN_API_KEY>"
+```
 
 ---
 
@@ -369,7 +379,7 @@ Frontend (`clairo-frontend/clairo-frontend/.env`):
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VITE_API_URL` | **Yes** | Backend base URL. |
-| `VITE_ADMIN_API_KEY` | Only if backend sets `ADMIN_API_KEY` | Must match it, or "Seed Demo Data" gets a 403. |
+| `VITE_ADMIN_API_KEY` | Local dev only | Must match `ADMIN_API_KEY`, or "Seed Demo Data" gets a 403. **Never set this in a public deployment** — `VITE_`-prefixed vars ship in the public JS bundle, so it stops being a secret. Seed a public deployment via `curl` instead (see Step 4 above). |
 
 ---
 
@@ -394,17 +404,19 @@ CLAIRO ships with `render.yaml` (backend) and a static-build frontend that works
 
 ### Deploying
 
+This repo is live at the URLs linked at the top of this README — here's how it's wired:
+
 **Backend (Render):**
 ```bash
 # From the repo root, push to GitHub, then in Render:
 # New > Web Service > connect this repo > set Root Directory to clairo-backend
 # render.yaml is auto-detected and handles the build/start commands.
 ```
-Set `GROQ_API_KEY`, `ADMIN_API_KEY`, `INSFORGE_DATABASE_URL`, and `CORS_ORIGINS` (your frontend's exact URL) in Render's environment tab.
+Set `GROQ_API_KEY`, `ADMIN_API_KEY`, and `INSFORGE_DATABASE_URL` in Render's environment tab. Optionally pin `CORS_ORIGINS` to your frontend's exact URL — the CORS regex already covers any `*.vercel.app`/`*.netlify.app`/`*.onrender.app`/`*.railway.app` domain, so this isn't required, just a bit tighter.
 
-**Frontend (Vercel/Netlify):** set the project root to `clairo-frontend/clairo-frontend`, build command `npm run build`, output directory `dist`. Set `VITE_API_URL` to your deployed backend URL and `VITE_ADMIN_API_KEY` to match `ADMIN_API_KEY` if you set one.
+**Frontend (Vercel/Netlify):** set the project root to `clairo-frontend/clairo-frontend`, build command `npm run build`, output directory `dist`. Set `VITE_API_URL` to your deployed backend URL. **Do not set `VITE_ADMIN_API_KEY`** on a public deployment (see the warning in the Environment Variables section above) — seed demo data from the command line instead.
 
-After both are live, update the backend's `CORS_ORIGINS` to the frontend's real URL (the wildcard regex covers preview URLs, but pin the production one explicitly).
+Via CLI: `vercel link` then `vercel env add VITE_API_URL production` then `vercel --prod` from `clairo-frontend/clairo-frontend`.
 
 ---
 

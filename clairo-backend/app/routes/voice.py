@@ -1,22 +1,36 @@
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
-from app.services.voice_service import transcribe_audio, parse_voice_intent
+from app.services.voice_service import (
+    VoiceProcessingError,
+    transcribe_audio,
+    parse_voice_intent,
+)
 from app.services.risk_service import score_claim
 from app.services.analytics_service import get_summary_stats
 
 router = APIRouter()
+
+MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 @router.post("/process")
 async def process_voice(file: UploadFile = File(...)):
 
     audio_bytes = await file.read()
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file too large (max 20 MB).")
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="No audio data received.")
 
-    # Step 1: Transcribe
-    transcript = transcribe_audio(audio_bytes, filename=file.filename)
+    try:
+        # Step 1: Transcribe
+        transcript = transcribe_audio(audio_bytes, filename=file.filename)
 
-    # Step 2: Parse intent
-    intent_data = parse_voice_intent(transcript)
+        # Step 2: Parse intent
+        intent_data = parse_voice_intent(transcript)
+    except VoiceProcessingError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     intent = intent_data.get("intent", "unknown")
 
     # Step 3: Route to correct endpoint

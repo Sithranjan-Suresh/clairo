@@ -221,6 +221,12 @@ export async function checkPriorAuthorizationDocuments(formData) {
   return data;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
+  ));
+}
+
 /** Client-side PDF fallback when backend export is unavailable */
 export function printAppealLetterPdf(letter, meta = {}) {
   const formatted = (letter ?? "").replace(/\\n/g, "\n");
@@ -228,8 +234,11 @@ export function printAppealLetterPdf(letter, meta = {}) {
   if (!win) {
     throw new Error("Pop-up blocked. Allow pop-ups to export the appeal letter.");
   }
-  const payer = meta.payer ?? "—";
-  const patient = meta.patient_id ?? "—";
+  // structured_claim fields are LLM-extracted from an uploaded PDF, i.e.
+  // attacker-controlled input — never interpolate them into this HTML
+  // document unescaped.
+  const payer = escapeHtml(meta.payer ?? "—");
+  const patient = escapeHtml(meta.patient_id ?? "—");
   win.document.write(`<!DOCTYPE html><html><head><title>Appeal Letter</title>
 <style>
   body { font-family: Georgia, serif; color: #111; padding: 48px; max-width: 720px; margin: 0 auto; line-height: 1.6; }
@@ -239,7 +248,7 @@ export function printAppealLetterPdf(letter, meta = {}) {
 </style></head><body>
 <h1>Insurance Appeal Letter</h1>
 <p class="meta">Payer: ${payer} · Patient: ${patient}</p>
-<pre>${formatted.replace(/</g, "&lt;")}</pre>
+<pre>${escapeHtml(formatted)}</pre>
 </body></html>`);
   win.document.close();
   win.focus();

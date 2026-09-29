@@ -29,15 +29,30 @@ def get_denials_by_payer():
 
 
 def get_denials_by_cpt():
+    """Denial counts per individual CPT code.
+
+    cpt_codes is stored as a comma-separated string per claim (e.g.
+    "29881, 29880"), so grouping on the raw column — as this used to do —
+    treats every distinct code combination as its own bucket instead of
+    counting per code. We explode and recount in Python instead.
+    """
     db = SessionLocal()
     try:
-        results = (
-            db.query(DenialClaim.cpt_codes, func.count(DenialClaim.id).label("count"))
-            .group_by(DenialClaim.cpt_codes)
-            .order_by(func.count(DenialClaim.id).desc())
-            .all()
+        rows = db.query(DenialClaim.cpt_codes).filter(DenialClaim.cpt_codes.isnot(None)).all()
+        counts = defaultdict(int)
+        for (raw,) in rows:
+            if not raw:
+                continue
+            for code in raw.split(","):
+                code = code.strip()
+                if code:
+                    counts[code] += 1
+
+        return sorted(
+            [{"cpt_code": code, "denial_count": count} for code, count in counts.items()],
+            key=lambda item: item["denial_count"],
+            reverse=True,
         )
-        return [{"cpt_code": r.cpt_codes, "denial_count": r.count} for r in results]
     finally:
         db.close()
 

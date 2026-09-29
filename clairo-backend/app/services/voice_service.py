@@ -1,19 +1,33 @@
+import json
+import logging
 import os
+
 from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
+class VoiceProcessingError(Exception):
+    """Raised when transcription or intent parsing fails, so the route can
+    return a clean error response instead of a bare 500."""
+
+
 def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> str:
-    transcription = client.audio.transcriptions.create(
-        file=(filename, audio_bytes),
-        model="whisper-large-v3",
-        language="en"
-    )
-    return transcription.text
+    try:
+        transcription = client.audio.transcriptions.create(
+            file=(filename, audio_bytes),
+            model="whisper-large-v3",
+            language="en"
+        )
+        return transcription.text
+    except Exception as exc:
+        logger.exception("Voice transcription failed")
+        raise VoiceProcessingError(f"Transcription failed: {exc}") from exc
 
 
 def parse_voice_intent(transcript: str) -> dict:
@@ -34,13 +48,26 @@ Return ONLY a JSON object with these fields:
 
 Return ONLY the JSON. No explanation, no markdown.
 """
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        text = response.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.exception("Voice intent LLM call failed")
+        raise VoiceProcessingError(f"Intent parsing failed: {exc}") from exc
 
-    import json
-    text = response.choices[0].message.content.strip()
     text = text.replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("Voice intent JSON parse failed: %s", text[:200])
+        return {
+            "intent": "unknown",
+            "payer": None,
+            "cpt_codes": [],
+            "documentation_notes": None,
+            "raw_transcript": transcript,
+        }

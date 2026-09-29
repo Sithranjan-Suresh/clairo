@@ -225,7 +225,10 @@ def fallback_pa_packet(
     if warnings:
         warning_note = " Processing warnings: " + "; ".join(warnings)
     if groq_error:
-        warning_note += f" Groq error: {groq_error}"
+        # The real vendor/model error is already logged server-side
+        # (logger.exception in the caller) — never put raw exception text
+        # in a field a biller or physician reads directly.
+        warning_note += " The AI review service was temporarily unavailable."
     if raw:
         warning_note += " Model output could not be parsed."
 

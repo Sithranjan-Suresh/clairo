@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.limiter import limiter
 from app.rag.retriever import retrieve_policy
-from app.services.groq_services import client
+from app.services.groq_services import CHAT_MODEL, client
 from app.services.prior_auth_document_service import (
     build_documents_context,
     build_policy_context,
@@ -268,7 +268,7 @@ RETRIEVED PAYER POLICY EVIDENCE:
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
@@ -416,21 +416,28 @@ RETRIEVED POLICY EVIDENCE:
 {policy_text}
 """
 
+    # Degrade to a fallback packet on LLM failure rather than hard-failing
+    # the request — every sibling AI-backed endpoint in this app does the
+    # same (risk scoring, appeal generation, document-based PA check) so
+    # a transient/model-config Groq issue doesn't 502 only this one route.
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
         content = response.choices[0].message.content or ""
-    except Exception as exc:
+        result = safe_json_parse(content) or {}
+    except Exception:
         logger.exception("Prior auth Groq call failed")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Prior auth model call failed: {exc}",
-        ) from exc
-
-    result = safe_json_parse(content) or {}
+        result = {
+            "pa_required": "unknown",
+            "urgency": "medium",
+            "recommendation": (
+                "AI review is temporarily unavailable — please verify prior "
+                "authorization requirements manually before submitting."
+            ),
+        }
 
     packet = {
         "pa_required": normalize_pa_required(result.get("pa_required", True)),

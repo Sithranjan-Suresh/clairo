@@ -1,6 +1,9 @@
 import json
+import logging
 import re
-from app.services.groq_services import client
+from app.services.groq_services import CHAT_MODEL, client
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────
@@ -122,7 +125,7 @@ DOCUMENTATION NOTES: {documentation_notes}
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
@@ -130,7 +133,14 @@ DOCUMENTATION NOTES: {documentation_notes}
         return safe_parse_llm_score(content)
 
     except Exception as e:
-        return {"llm_score": 20, "remediation": f"LLM scoring unavailable: {str(e)}"}
+        # Log the real vendor/model error server-side; never surface raw
+        # exception text (which can include vendor/model names) in a
+        # field a biller or physician reads directly.
+        logger.warning("LLM risk scoring failed: %s", e)
+        return {
+            "llm_score": 20,
+            "remediation": "AI documentation scoring unavailable — manual review recommended.",
+        }
 
 
 def safe_parse_llm_score(text: str) -> dict:

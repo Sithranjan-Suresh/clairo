@@ -2,7 +2,7 @@ import json
 import logging
 import re
 
-from app.services.groq_services import client
+from app.services.groq_services import CHAT_MODEL, client
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ RETRIEVED POLICY EVIDENCE:
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=CHAT_MODEL,
             messages=[
                 {
                     "role": "user",
@@ -84,11 +84,12 @@ RETRIEVED POLICY EVIDENCE:
         )
         content = response.choices[0].message.content
     except Exception as exc:
+        logger.warning("Appeal generation LLM call failed: %s", exc)
         return {
             "appeal_letter": "Unable to generate appeal letter — the AI model call failed. "
             "Please retry or review the claim manually.",
             "confidence_score": 0,
-            "confidence_rationale": f"LLM call failed: {exc}",
+            "confidence_rationale": "AI generation unavailable — manual review recommended.",
         }
 
     logger.debug("Appeal raw LLM output: %s", content)

@@ -5,6 +5,8 @@ import os
 from groq import Groq
 from dotenv import load_dotenv
 
+from app.services.groq_services import CHAT_MODEL
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ Return ONLY the JSON. No explanation, no markdown.
 """
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )

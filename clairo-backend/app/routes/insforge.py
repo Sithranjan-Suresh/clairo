@@ -10,12 +10,12 @@ Exposes endpoints that demonstrate CLAIRO's InsForge-powered backend:
                                  showing both layers working together in one call.
 """
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
 from app.database import SessionLocal, engine, DATABASE_URL
 from app.limiter import limiter
 from app.models import DenialClaim
-from app.services.groq_services import client
+from app.services.groq_services import CHAT_MODEL, client
 from sqlalchemy import func
 import json, time
 
@@ -223,12 +223,19 @@ Return ONLY valid JSON:
   "data_source": "InsForge Postgres — live query"
 }}"""
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        raw = response.choices[0].message.content.strip()
+        try:
+            response = client.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            raw = response.choices[0].message.content.strip()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Agent synthesis failed: {exc}",
+            ) from exc
+
         raw = raw.replace("```json", "").replace("```", "").strip()
 
         try:

@@ -80,3 +80,28 @@ def test_non_pdf_upload_is_rejected():
 def test_oversized_upload_is_rejected():
     response = _upload("big.pdf", body=b"0" * (16 * 1024 * 1024))
     assert response.status_code == 413
+
+
+def test_corrupted_pdf_returns_clean_error_not_bare_500():
+    """A file that passes the content-type check but PyMuPDF can't
+    actually parse (corrupted, password-protected, or just not real PDF
+    bytes) used to raise unhandled all the way out of the route, producing
+    a bare 500 with no JSON body and no CORS headers — confirmed live on
+    the deployed backend. It should now be a clean 422 with a JSON detail."""
+    before = set(os.listdir(UPLOAD_FOLDER)) if os.path.isdir(UPLOAD_FOLDER) else set()
+
+    with patch(
+        _PATCHES["extract_text_from_pdf"][0],
+        side_effect=RuntimeError("cannot open broken document"),
+    ):
+        response = client.post(
+            "/upload",
+            files={"file": ("broken.pdf", io.BytesIO(b"%PDF-1.4 not really"), "application/pdf")},
+        )
+
+    assert response.status_code == 422
+    assert "detail" in response.json()
+
+    # The saved-then-unreadable file should be cleaned up, not left behind.
+    after = set(os.listdir(UPLOAD_FOLDER)) if os.path.isdir(UPLOAD_FOLDER) else set()
+    assert after == before

@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException
@@ -13,6 +14,7 @@ from datetime import datetime
 
 Base.metadata.create_all(bind=engine)
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 UPLOAD_FOLDER = "app/uploads"
@@ -44,8 +46,20 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         buffer.write(content)
 
-    # 1. Extract raw text
-    extracted_text = extract_text_from_pdf(file_path)
+    # 1. Extract raw text — PyMuPDF raises on a corrupted/non-PDF byte
+    # stream (e.g. a renamed .txt/.png passed off as .pdf despite the
+    # content-type check above), and this was previously uncaught,
+    # producing a bare 500 with no CORS headers instead of a clean error.
+    try:
+        extracted_text = extract_text_from_pdf(file_path)
+    except Exception as exc:
+        logger.warning("PDF text extraction failed for %s: %s", safe_name, exc)
+        os.remove(file_path)
+        raise HTTPException(
+            status_code=422,
+            detail="Could not read this file as a PDF. It may be corrupted, "
+            "password-protected, or not a valid PDF.",
+        ) from exc
 
     # 2. Structured claim extraction
     structured_claim = extract_claim_data(extracted_text)

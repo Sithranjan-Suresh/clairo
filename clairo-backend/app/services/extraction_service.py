@@ -2,7 +2,7 @@ import json
 import logging
 import re
 
-from app.services.groq_services import client
+from app.services.groq_services import CHAT_MODEL, client
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ DOCUMENT TEXT:
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=CHAT_MODEL,
             messages=[
                 {
                     "role": "user",

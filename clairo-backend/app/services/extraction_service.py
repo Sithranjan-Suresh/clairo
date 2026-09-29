@@ -1,7 +1,10 @@
 import json
+import logging
 import re
 
 from app.services.groq_services import client
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------
@@ -60,7 +63,7 @@ DOCUMENT TEXT:
 
         content = response.choices[0].message.content
 
-        print("\n--- RAW GROQ OUTPUT ---\n", content, "\n")
+        logger.debug("Extraction raw LLM output: %s", content)
 
         return safe_json_parse(content)
 

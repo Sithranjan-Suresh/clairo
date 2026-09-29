@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 clairo.db
 
+# Regenerated locally via `python run_ingest.py` — a binary vector index
+# doesn't belong in version control.
+clairo-backend/chroma_db/
+
 # InsForge & AI agent skills (local config, not for version control)
 .insforge
 .agent

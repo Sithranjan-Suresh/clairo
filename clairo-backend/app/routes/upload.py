@@ -1,5 +1,6 @@
 import os
-from fastapi import APIRouter, UploadFile, File
+import uuid
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.services.pdf_service import extract_text_from_pdf
 
 from app.services.extraction_service import extract_claim_data
@@ -14,17 +15,31 @@ Base.metadata.create_all(bind=engine)
 router = APIRouter()
 
 UPLOAD_FOLDER = "app/uploads"
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 
 
 @router.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
 
+    if not (file.filename or "").lower().endswith(".pdf") or file.content_type not in (
+        "application/pdf",
+        "application/x-pdf",
+    ):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    # Never trust the client-supplied filename for the on-disk path (path
+    # traversal risk, e.g. "../../etc/passwd") — generate our own name and
+    # keep the original only for display purposes.
+    safe_name = f"{uuid.uuid4().hex}.pdf"
+    file_path = os.path.join(UPLOAD_FOLDER, safe_name)
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 15 MB).")
 
     with open(file_path, "wb") as buffer:
-        content = await file.read()
         buffer.write(content)
 
     # 1. Extract raw text
@@ -70,7 +85,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         db.close()
 
     return {
-        "filename": file.filename,
+        "filename": file.filename or safe_name,
         "structured_claim": structured_claim,
         "classification": classification,
         "risk_score": risk_result.get("risk_score"),

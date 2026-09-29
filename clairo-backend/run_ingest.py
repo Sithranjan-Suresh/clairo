@@ -1,4 +1,10 @@
 from app.rag.ingest import ingest_policy
+from app.rag import vectorstore
+
+# Re-running this script re-embeds every policy PDF from scratch, so reset
+# the collection first — otherwise each run doubles up every chunk.
+vectorstore.client.delete_collection("payer_policies")
+vectorstore.collection = vectorstore.client.get_or_create_collection("payer_policies")
 
 # UHC
 ingest_policy("UHC", "app/data/policies/uhc_knee_arthroscopy.pdf")

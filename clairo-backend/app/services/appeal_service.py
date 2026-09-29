@@ -1,7 +1,10 @@
 import json
+import logging
 import re
 
 from app.services.groq_services import client
+
+logger = logging.getLogger(__name__)
 
 
 def generate_appeal(
@@ -88,8 +91,7 @@ RETRIEVED POLICY EVIDENCE:
             "confidence_rationale": f"LLM call failed: {exc}",
         }
 
-    print("\n--- APPEAL RAW OUTPUT ---\n")
-    print(content)
+    logger.debug("Appeal raw LLM output: %s", content)
 
     result = safe_json_parse(content)
 

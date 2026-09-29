@@ -17,3 +17,9 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      # Pin the runtime — Render's Python "latest" default (3.14 as of this
+      # writing) is newer than psycopg2-binary==2.9.9 has compiled wheels
+      # for, which crashes on import with an ABI-mismatch symbol error.
+      # 3.11 is what this project is developed and tested against.
+      - key: PYTHON_VERSION
+        value: 3.11.9

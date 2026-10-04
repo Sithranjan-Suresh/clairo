@@ -6,6 +6,10 @@ import AppealLetterSection from "./AppealLetterSection";
 import AnalyticsSection from "./AnalyticsSection";
 import PriorAuthSection from "./PriorAuthSection";
 import InsforgePanel from "./InsforgePanel";
+import ClaimsDashboard from "./ClaimsDashboard";
+import PolicyLibrary from "./PolicyLibrary";
+import AuditLogPanel from "./AuditLogPanel";
+import UserMenu from "./UserMenu";
 import { BrandMark } from "./BrandMark";
 import ClairoLogo from "./ClairoLogo";
 import { API_BASE_URL } from "../api";
@@ -26,6 +30,7 @@ export default function ClairoExperience({
   onAppealLetterChange,
   onExportCompleted,
   onResetAppeal,
+  onLoadClaim,
 }) {
   const goToIntake = () => setActiveTab("Clairo.AI");
   // Clicking "Explore" used to run a multi-phase shader/collapse/reveal
@@ -42,6 +47,7 @@ export default function ClairoExperience({
       <div
         className={`app-shell app-shell--content ${revealing ? "app-shell--revealed" : "app-shell--prepared"}`}
       >
+        <UserMenu />
         <header className="app-top app-layer">
           {showHeaderDelta && (
             <div className="app-top__delta-wrap">
@@ -111,6 +117,9 @@ export default function ClairoExperience({
               {activeTab === "Analytics" && (
                 <AnalyticsSection uploadResult={uploadResult} />
               )}
+              {activeTab === "Claims" && <ClaimsDashboard onLoadClaim={onLoadClaim} />}
+              {activeTab === "Policies" && <PolicyLibrary />}
+              {activeTab === "Audit Log" && <AuditLogPanel />}
               {activeTab === "InsForge" && (
                 <InsforgePanel />
               )}

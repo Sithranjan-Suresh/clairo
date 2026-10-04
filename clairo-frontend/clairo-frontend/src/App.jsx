@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { WovenLightHero } from "@/components/ui/woven-light-hero";
 import ClairoExperience from "./components/ClairoExperience";
+import AuthScreen from "./auth/AuthScreen";
+import { useAuth } from "./auth/AuthContext";
+import { claimToWorkspace } from "./api";
 import { normalizeAppealConfidence } from "./utils/appealConfidence";
 import "./index.css";
 
@@ -15,6 +18,17 @@ export default function App() {
   const [appealData, setAppealData] = useState(null);
   const [appealViability, setAppealViability] = useState(null);
   const [appealLetterText, setAppealLetterText] = useState(null);
+  const { user } = useAuth();
+
+  // Never let one user's working data linger in memory for the next sign-in.
+  useEffect(() => {
+    if (user) return;
+    setUploadResult(null);
+    setAppealData(null);
+    setAppealViability(null);
+    setAppealLetterText(null);
+    setActiveTab("Clairo.AI");
+  }, [user]);
 
   function resetAppealSession() {
     setAppealData(null);
@@ -79,6 +93,22 @@ export default function App() {
     setAppealData((prev) => (prev ? { ...prev, appeal_letter: formatted } : prev));
   }
 
+  function handleLoadClaim(claim) {
+    handleUploadResult(claimToWorkspace(claim));
+    const latest = claim.appeals?.[0];
+    if (latest) {
+      handleAppealGenerated(
+        {
+          appeal_letter: latest.letter_text,
+          confidence_score: latest.confidence_score,
+          confidence_rationale: latest.confidence_rationale,
+        },
+        null,
+      );
+    }
+    setActiveTab("Appeal Letter");
+  }
+
   function handleExportCompleted() {
     setUploadResult((prev) =>
       prev ? { ...prev, export_completed: true } : prev,
@@ -103,6 +133,8 @@ export default function App() {
     <>
       {!showShader ? (
         <WovenLightHero onExplore={() => setShowShader(true)} />
+      ) : !user ? (
+        <AuthScreen />
       ) : (
         <ClairoExperience
           activeTab={activeTab}
@@ -118,6 +150,7 @@ export default function App() {
           onAppealLetterChange={handleAppealLetterChange}
           onExportCompleted={handleExportCompleted}
           onResetAppeal={handleResetAppeal}
+          onLoadClaim={handleLoadClaim}
         />
       )}
     </>

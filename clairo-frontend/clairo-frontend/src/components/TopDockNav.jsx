@@ -1,19 +1,25 @@
-import { Brain, FileText, ClipboardList, BarChart3, Database } from "lucide-react";
+import { Brain, FileText, ClipboardList, BarChart3, Database, Table2, Library, ShieldCheck } from "lucide-react";
 import { BrandMark } from "./BrandMark";
+import { useAuth } from "../auth/AuthContext";
 
 const DOCK_ITEMS = [
   { id: "Clairo.AI",           icon: Brain,         label: "CLΔIRO" },
+  { id: "Claims",              icon: Table2,        label: "Claims" },
   { id: "Appeal Letter",       icon: FileText,      label: "Appeal Letter" },
   { id: "Prior Authorization", icon: ClipboardList, label: "Prior Auth" },
   { id: "Analytics",           icon: BarChart3,     label: "Analytics" },
+  { id: "Policies",            icon: Library,       label: "Policies" },
   { id: "InsForge",            icon: Database,      label: "InsForge DB" },
+  { id: "Audit Log",           icon: ShieldCheck,   label: "Audit Log", adminOnly: true },
 ];
 
 export default function TopDockNav({ activeTab, setActiveTab, hasClaim }) {
+  const { isAdmin } = useAuth();
+  const items = DOCK_ITEMS.filter((item) => !item.adminOnly || isAdmin);
   return (
     <nav className="top-dock font-ui" aria-label="Main navigation">
       <div className="top-dock__inner glass-panel">
-        {DOCK_ITEMS.map((item) => {
+        {items.map((item) => {
           const isActive = activeTab === item.id;
           const Icon = item.icon;
           return (

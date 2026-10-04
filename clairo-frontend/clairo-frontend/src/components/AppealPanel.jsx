@@ -199,6 +199,7 @@ export default function AppealPanel({
       const result = await generateAppeal(
         uploadResult.structured_claim,
         uploadResult.classification,
+        uploadResult.claim_id ?? null,
       );
 
       let nextViability = null;

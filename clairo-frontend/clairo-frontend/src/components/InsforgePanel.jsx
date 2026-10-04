@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { Database, Zap, RefreshCw, Bot, ChevronRight, Activity } from "lucide-react";
-import { API_BASE_URL } from "../api";
+import { authFetch } from "../api";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
 async function apiFetch(path, opts = {}) {
-  const res = await fetch(`${API_BASE_URL}${path}`, opts);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const res = await authFetch(path, opts);
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* non-JSON */ }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
   return res.json();
 }
 

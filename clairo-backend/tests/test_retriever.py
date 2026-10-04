@@ -35,3 +35,20 @@ def test_score_chunk_relevance_rewards_clinical_signal():
         denial_reason="medical necessity",
     )
     assert strong > weak
+
+
+def test_retrieval_does_not_waste_citation_slots_on_duplicate_chunks():
+    from unittest.mock import patch
+
+    from app.rag import retriever
+
+    dup = "Prior authorization is required for arthroscopic procedures."
+    fake = {
+        "documents": [[dup, dup, "Different criterion about physical therapy.", dup]],
+        "metadatas": [[{"payer": "AETNA", "source": "a.pdf", "chunk_index": i} for i in range(4)]],
+    }
+    with patch.object(retriever.collection, "query", return_value=fake), \
+         patch.object(retriever, "get_embedding", return_value=[0.0]):
+        results = retriever._retrieve_policy("Aetna", "q", top_k=3)
+    assert [r["text"] for r in results].count(dup) == 1
+    assert len(results) == 2

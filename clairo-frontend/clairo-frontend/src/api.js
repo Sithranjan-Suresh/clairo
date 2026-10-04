@@ -1,229 +1,259 @@
 // ─────────────────────────────────────────
-// CLAIRO — Central API Configuration
-// Change API_BASE_URL here to point at any backend
+// CLAIRO — API client
+// Every request goes through authFetch, which attaches the JWT and signals the
+// app to log out when the server says the session is no longer valid.
 // ─────────────────────────────────────────
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
-// Upload a denial PDF — returns structured claim + classification + risk
-export async function uploadDenial(file) {
+const TOKEN_KEY = "clairo_token";
+export const UNAUTHORIZED_EVENT = "clairo:unauthorized";
+
+export function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+export function setToken(token) {
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable */ }
+}
+export function clearToken() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage unavailable */ }
+}
+
+export async function authFetch(path, opts = {}) {
+  const headers = new Headers(opts.headers || {});
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE_URL}${path}`, { ...opts, headers });
+  // A 401 on /auth/login just means "wrong password" — only treat it as an
+  // expired session on authenticated endpoints.
+  if (res.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/register")) {
+    clearToken();
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+  return res;
+}
+
+/** Best human-readable message from a FastAPI/our-API error response. */
+async function errorMessage(res, fallback) {
+  try {
+    const body = await res.json();
+    if (typeof body.detail === "string") return body.detail;
+    if (Array.isArray(body.detail)) {
+      return body.detail
+        .map((d) => (d.msg || d.message || JSON.stringify(d)).replace(/^Value error, /, ""))
+        .join("; ");
+    }
+    if (typeof body.error === "string") return body.error;
+    if (typeof body.message === "string") return body.message;
+  } catch { /* non-JSON body */ }
+  if (res.status === 429) return "Too many requests — please wait a moment and try again.";
+  if (res.status === 401) return "Your session has expired. Please sign in again.";
+  return `${fallback} (${res.status})`;
+}
+
+async function request(path, opts, fallback) {
+  let res;
+  try {
+    res = await authFetch(path, opts);
+  } catch {
+    throw new Error("Can't reach the server. If it was idle it may be waking up — try again in a few seconds.");
+  }
+  if (!res.ok) throw new Error(await errorMessage(res, fallback));
+  return res;
+}
+
+const json = (body) => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+// ── auth ─────────────────────────────────────────────────────────
+export async function register(email, password) {
+  const res = await request("/auth/register", json({ email, password }), "Registration failed");
+  return res.json();
+}
+export async function login(email, password) {
+  const res = await request("/auth/login", json({ email, password }), "Sign in failed");
+  return res.json();
+}
+export async function getMe() {
+  return (await request("/auth/me", {}, "Session check failed")).json();
+}
+
+// ── background jobs ──────────────────────────────────────────────
+export async function waitForJob(jobId, { timeoutMs = 180000, intervalMs = 1200 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await (await request(`/jobs/${jobId}`, {}, "Job status check failed")).json();
+    if (job.status === "succeeded") return job;
+    if (job.status === "failed") throw new Error(job.error || "Processing failed.");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("This is taking longer than expected. Check the Claims tab for the result.");
+}
+
+// ── claims ───────────────────────────────────────────────────────
+export async function getClaim(id) {
+  return (await request(`/claims/${id}`, {}, "Could not load claim")).json();
+}
+
+export async function listClaims(params = {}) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") qs.set(k, v);
+  });
+  return (await request(`/claims?${qs}`, {}, "Could not load claims")).json();
+}
+
+export async function getClaimAudit(id) {
+  return (await request(`/claims/${id}/audit`, {}, "Could not load audit history")).json();
+}
+
+export async function reanalyzeClaim(id) {
+  const { job_id } = await (await request(`/claims/${id}/analyze`, { method: "POST" }, "Could not start analysis")).json();
+  await waitForJob(job_id);
+  return getClaim(id);
+}
+
+/** Shape a stored claim like the old synchronous upload response so the
+ *  existing intake/appeal panels keep working unchanged. */
+export function claimToWorkspace(claim) {
+  return {
+    claim_id: claim.id,
+    filename: claim.documents?.[0]?.original_filename ?? `Claim #${claim.id}`,
+    structured_claim: {
+      payer: claim.payer,
+      patient_id: claim.patient_id,
+      cpt_codes: claim.cpt_codes ?? [],
+      denial_reason: claim.denial_reason,
+      billed_amount: claim.billed_amount,
+      denied_amount: claim.denied_amount,
+      service_date: claim.service_date,
+    },
+    classification: claim.classification,
+    risk_score: claim.risk_score,
+    risk_level: claim.risk_level,
+  };
+}
+
+// Upload a denial PDF. Analysis happens in a background worker; we poll the job.
+export async function uploadDenial(file, { onStatus } = {}) {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await fetch(`${API_BASE_URL}/upload`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  const created = await (await request("/claims", { method: "POST", body: formData }, "Upload failed")).json();
+  onStatus?.("analyzing");
+  await waitForJob(created.job_id);
+  return claimToWorkspace(await getClaim(created.claim_id));
 }
 
-// Generate an appeal letter from a structured claim + classification
-export async function generateAppeal(structured_claim, classification) {
-  const res = await fetch(`${API_BASE_URL}/appeal/generate-from-claim`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ structured_claim, classification }),
-  });
-  if (!res.ok) throw new Error(`Appeal generation failed: ${res.status} ${res.statusText}`);
-  return res.json();
+// Generate an appeal letter. With a claim id it is persisted (and audited) and
+// runs as a background job; without one it falls back to the stateless endpoint.
+export async function generateAppeal(structured_claim, classification, claimId = null) {
+  if (claimId) {
+    const { job_id } = await (await request(`/claims/${claimId}/appeal`, { method: "POST" }, "Appeal generation failed")).json();
+    await waitForJob(job_id);
+    const claim = await getClaim(claimId);
+    const appeal = claim.appeals?.[0];
+    return {
+      appeal_letter: appeal?.letter_text ?? "",
+      confidence_score: appeal?.confidence_score ?? 0,
+      confidence_rationale: appeal?.confidence_rationale,
+      citations: appeal?.citations ?? [],
+    };
+  }
+  return (await request("/appeal/generate-from-claim", json({ structured_claim, classification }), "Appeal generation failed")).json();
 }
 
-// Score a single claim for denial risk
+// ── stateless scoring / retrieval ───────────────────────────────
 export async function scoreClaim(cpt_codes, payer, documentation_notes) {
-  const res = await fetch(`${API_BASE_URL}/risk/score-claim`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cpt_codes, payer, documentation_notes }),
-  });
-  if (!res.ok) throw new Error(`Risk scoring failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  return (await request("/risk/score-claim", json({ cpt_codes, payer, documentation_notes }), "Risk scoring failed")).json();
 }
 
-// Score a queue of claims for the heatmap
 export async function scoreQueue(claims) {
-  const res = await fetch(`${API_BASE_URL}/risk/score-queue`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ claims }),
-  });
-  if (!res.ok) throw new Error(`Queue scoring failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  return (await request("/risk/score-queue", json({ claims }), "Queue scoring failed")).json();
 }
 
-// Retrieve policy citations for a denial
 export async function retrievePolicy(payer, cpt, denial_reason, classification = "") {
   const params = new URLSearchParams({ payer, cpt, denial_reason, classification });
-  const res = await fetch(`${API_BASE_URL}/rag/retrieve?${params}`);
-  if (!res.ok) throw new Error(`Policy retrieval failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  return (await request(`/rag/retrieve?${params}`, {}, "Policy retrieval failed")).json();
 }
 
-// Get appeal viability rating
 export async function getViability(confidence_score, classification, payer) {
-  const res = await fetch(`${API_BASE_URL}/export/viability`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confidence_score, classification, payer }),
-  });
-  if (!res.ok) throw new Error(`Viability check failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  return (await request("/export/viability", json({ confidence_score, classification, payer }), "Viability check failed")).json();
 }
 
-// Get analytics summary stats
+// ── policy library / audit ──────────────────────────────────────
+export async function getPolicies() {
+  return (await request("/policies", {}, "Could not load policies")).json();
+}
+
+export async function searchPolicies(q, payer = "") {
+  const params = new URLSearchParams({ q });
+  if (payer) params.set("payer", payer);
+  return (await request(`/policies/search?${params}`, {}, "Policy search failed")).json();
+}
+
+export async function getAuditLogs(params = {}) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") qs.set(k, v);
+  });
+  return (await request(`/audit-logs?${qs}`, {}, "Could not load audit log")).json();
+}
+
+// ── analytics ───────────────────────────────────────────────────
 export async function getAnalyticsSummary() {
-  const res = await fetch(`${API_BASE_URL}/analytics/summary`);
-  if (!res.ok) throw new Error(`Analytics failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  return (await request("/analytics/summary", {}, "Analytics failed")).json();
 }
 
-// Seed demo data. VITE_ADMIN_API_KEY is optional — only needed when the
-// backend has ADMIN_API_KEY set (recommended for any public deployment,
-// since this endpoint wipes and reseeds the claims table).
+// Admin only: reseeds the shared demo claims (real users' claims are untouched).
 export async function seedDemoData() {
-  const adminKey = import.meta.env.VITE_ADMIN_API_KEY;
-  const res = await fetch(`${API_BASE_URL}/analytics/seed?force=true`, {
-    method: "POST",
-    headers: adminKey ? { "X-Admin-Key": adminKey } : undefined,
-  });
-  if (!res.ok) throw new Error(`Seed failed: ${res.status} ${res.statusText}`);
-  return res.json();
+  return (await request("/analytics/seed?force=true", { method: "POST" }, "Seed failed")).json();
 }
 
-// Analytics breakdowns
 export async function getAnalyticsByPayer() {
-  const res = await fetch(`${API_BASE_URL}/analytics/by-payer`);
-  if (!res.ok) throw new Error(`Analytics by payer failed: ${res.status}`);
-  return res.json();
+  return (await request("/analytics/by-payer", {}, "Analytics by payer failed")).json();
 }
-
 export async function getAnalyticsByClassification() {
-  const res = await fetch(`${API_BASE_URL}/analytics/by-classification`);
-  if (!res.ok) throw new Error(`Analytics by classification failed: ${res.status}`);
-  return res.json();
+  return (await request("/analytics/by-classification", {}, "Analytics by classification failed")).json();
 }
-
 export async function getAnalyticsByCpt() {
-  const res = await fetch(`${API_BASE_URL}/analytics/by-cpt`);
-  if (!res.ok) throw new Error(`Analytics by CPT failed: ${res.status}`);
-  return res.json();
+  return (await request("/analytics/by-cpt", {}, "Analytics by CPT failed")).json();
 }
-
 export async function getAnalyticsMonthlyTrend() {
-  const res = await fetch(`${API_BASE_URL}/analytics/by-month`);
-  if (!res.ok) throw new Error(`Monthly trend failed: ${res.status}`);
-  return res.json();
+  return (await request("/analytics/by-month", {}, "Monthly trend failed")).json();
 }
 
+// ── export / voice / prior auth ─────────────────────────────────
 // Export appeal as PDF (backend); returns blob on success
 export async function exportAppealPdf({ appeal_letter, structured_claim, classification, confidence_score = 0 }) {
-  const res = await fetch(`${API_BASE_URL}/export/export-pdf`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ appeal_letter, structured_claim, confidence_score: Math.round(confidence_score ?? 0), classification }),
-  });
-  if (!res.ok) {
-    const err = new Error(`PDF export failed: ${res.status} ${res.statusText}`);
-    err.status = res.status;
-    throw err;
-  }
-  const contentType = res.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    return res.json();
-  }
-  const blob = await res.blob();
-  return { blob, filename: "clairo-appeal-letter.pdf" };
+  const res = await request(
+    "/export/export-pdf",
+    json({ appeal_letter, structured_claim, confidence_score: Math.round(confidence_score ?? 0), classification }),
+    "PDF export failed",
+  );
+  if ((res.headers.get("content-type") ?? "").includes("application/json")) return res.json();
+  return { blob: await res.blob(), filename: "clairo-appeal-letter.pdf" };
 }
 
-// Process voice/audio note for structured denial insights
 export async function processVoiceAudio(file, claimContext = null) {
   const formData = new FormData();
   formData.append("file", file);
   if (claimContext) {
-    formData.append(
-      "claim_context",
-      typeof claimContext === "string" ? claimContext : JSON.stringify(claimContext),
-    );
+    formData.append("claim_context", typeof claimContext === "string" ? claimContext : JSON.stringify(claimContext));
   }
-  const res = await fetch(`${API_BASE_URL}/voice/process`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) {
-    throw new Error(`Voice processing failed: ${res.status} ${res.statusText}`);
-  }
-  return res.json();
+  return (await request("/voice/process", { method: "POST", body: formData }, "Voice processing failed")).json();
 }
 
-// Check prior authorization requirements for a procedure
 export async function checkPriorAuthorization(payload) {
-  const res = await fetch(`${API_BASE_URL}/api/prior-auth-check`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`Prior auth check failed: ${res.status} ${res.statusText}`);
-  }
-  return res.json();
+  return (await request("/api/prior-auth-check", json(payload), "Prior auth check failed")).json();
 }
 
 // Build prior authorization packet from uploaded clinical documents
 export async function checkPriorAuthorizationDocuments(formData) {
-  const url = `${API_BASE_URL}/api/prior-auth-check-documents`;
-
-  if (import.meta.env.DEV) {
-    console.info("[Prior Auth] POST", url);
-  }
-
-  const res = await fetch(url, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (import.meta.env.DEV) {
-    console.info("[Prior Auth] response status", res.status);
-  }
-
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      if (typeof body.detail === "string") {
-        detail = body.detail;
-      } else if (Array.isArray(body.detail)) {
-        detail = body.detail
-          .map((item) => item.msg || item.message || JSON.stringify(item))
-          .join("; ");
-      } else if (body.message) {
-        detail = body.message;
-      }
-    } catch {
-      /* ignore */
-    }
-
-    if (res.status === 404) {
-      throw new Error(
-        "Prior Authorization endpoint not found. Check that backend route /api/prior-auth-check-documents is registered.",
-      );
-    }
-    if (res.status === 422) {
-      throw new Error(detail || "Invalid request. Check payer, CPT code, and uploaded files.");
-    }
-    if (res.status >= 500) {
-      throw new Error(detail || "Prior auth service error. Check backend logs.");
-    }
-    throw new Error(
-      typeof detail === "string" ? detail : "Prior auth packet generation failed.",
-    );
-  }
-
-  const data = await res.json();
-  if (import.meta.env.DEV) {
-    console.info("[Prior Auth] packet received", data?.packet ? "ok" : "missing packet");
-  }
-  if (!data?.packet) {
-    throw new Error("Invalid response from prior auth service.");
-  }
+  const data = await (await request("/api/prior-auth-check-documents", { method: "POST", body: formData }, "Prior auth packet generation failed")).json();
+  if (!data?.packet) throw new Error("Invalid response from prior auth service.");
   return data;
 }
 
@@ -261,29 +291,16 @@ export function printAppealLetterPdf(letter, meta = {}) {
   win.print();
 }
 
-// ── InsForge endpoints ────────────────────────────────────────────
-
+// ── InsForge ────────────────────────────────────────────────────
 export async function getInsforgeStatus() {
-  const res = await fetch(`${API_BASE_URL}/insforge/status`);
-  if (!res.ok) throw new Error(`InsForge status failed: ${res.status}`);
-  return res.json();
+  return (await request("/insforge/status", {}, "InsForge status failed")).json();
 }
-
 export async function getInsforgeLiveClaims(limit = 20) {
-  const res = await fetch(`${API_BASE_URL}/insforge/live-claims?limit=${limit}`);
-  if (!res.ok) throw new Error(`InsForge live claims failed: ${res.status}`);
-  return res.json();
+  return (await request(`/insforge/live-claims?limit=${limit}`, {}, "InsForge live claims failed")).json();
 }
-
 export async function runInsforgeAgent(query, payer = null, cpt_codes = null) {
   const body = { query };
   if (payer) body.payer = payer;
   if (cpt_codes) body.cpt_codes = cpt_codes;
-  const res = await fetch(`${API_BASE_URL}/insforge/agent-run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`InsForge agent run failed: ${res.status}`);
-  return res.json();
+  return (await request("/insforge/agent-run", json(body), "InsForge agent run failed")).json();
 }

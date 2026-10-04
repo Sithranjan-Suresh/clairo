@@ -8,6 +8,7 @@ import {
   seedDemoData,
 } from "../api";
 import { Spinner, ErrorBox, SectionHeader } from "./ui";
+import { useAuth } from "../auth/AuthContext";
 import {
   BarChart,
   Bar,
@@ -42,6 +43,7 @@ function mapTrend(rows) {
 
 export default function AnalyticsPanel() {
   const [loading, setLoading] = useState(false);
+  const { isAdmin } = useAuth();
   const [seeding, setSeeding] = useState(false);
   const [error, setError] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -119,15 +121,17 @@ export default function AnalyticsPanel() {
             "Load Analytics"
           )}
         </button>
-        <button className="btn-secondary" onClick={handleSeed} disabled={seeding}>
-          {seeding ? (
-            <>
-              <Spinner size={16} /> Seeding…
-            </>
-          ) : (
-            "Seed Demo Data"
-          )}
-        </button>
+        {isAdmin && (
+          <button className="btn-secondary" onClick={handleSeed} disabled={seeding}>
+            {seeding ? (
+              <>
+                <Spinner size={16} /> Seeding…
+              </>
+            ) : (
+              "Reseed demo data"
+            )}
+          </button>
+        )}
       </div>
 
       <ErrorBox message={error} />

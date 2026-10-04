@@ -180,7 +180,17 @@ def _retrieve_policy(payer: str, query: str, top_k: int = 3, classification: str
 
     scored.sort(key=lambda x: x["relevance_score"], reverse=True)
 
-    top_results = scored[:top_k]
+    # The same passage can be indexed more than once (re-ingested PDFs, or a
+    # policy that repeats a boilerplate section). Don't spend citation slots on copies.
+    seen_texts: set = set()
+    unique = []
+    for item in scored:
+        key = " ".join(item["text"].split())
+        if key not in seen_texts:
+            seen_texts.add(key)
+            unique.append(item)
+
+    top_results = unique[:top_k]
     for r in top_results:
         r.pop("relevance_score")
 

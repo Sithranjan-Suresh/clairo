@@ -31,3 +31,12 @@ slowapi==0.1.10
 
 # InsForge Postgres driver
 psycopg2-binary==2.9.9
+
+# production architecture
+alembic==1.20.0
+Mako==1.4.3
+MarkupSafe==3.0.4
+PyJWT==2.15.1
+bcrypt==5.0.0
+redis==8.1.0
+prometheus_client==0.26.0

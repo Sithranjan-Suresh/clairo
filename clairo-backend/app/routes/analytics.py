@@ -1,32 +1,25 @@
-import os
-
-from fastapi import APIRouter, Header, HTTPException, Request
-from app.limiter import limiter
-from app.services.analytics_service import (
-    get_denials_by_payer,
-    get_denials_by_cpt,
-    get_denials_by_classification,
-    get_denials_by_month,
-    get_summary_stats
-)
-from app.database import SessionLocal, Base, engine
-from app.models import DenialClaim
 import random
 from datetime import datetime, timedelta
+from typing import Optional
 
-router = APIRouter()
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
+from app.database import get_db
+from app.limiter import limiter
+from app.models import DenialClaim, User
+from app.security.auth import get_current_user, require_admin_or_key
+from app.services import audit_service
+from app.services.analytics_service import (
+    get_denials_by_classification,
+    get_denials_by_cpt,
+    get_denials_by_month,
+    get_denials_by_payer,
+    get_summary_stats,
+)
 
-def _require_admin(x_admin_key: str | None) -> None:
-    """Gate destructive/demo-data endpoints behind an admin key in
-    production. If ADMIN_API_KEY isn't set (local/dev), the check is
-    skipped so the existing dev workflow keeps working — but any real
-    deployment should set it, since this endpoint wipes and reseeds the
-    entire claims table and is otherwise reachable by anyone on the
-    internet."""
-    admin_key = os.getenv("ADMIN_API_KEY")
-    if admin_key and x_admin_key != admin_key:
-        raise HTTPException(status_code=403, detail="Invalid or missing admin key.")
+router = APIRouter(tags=["analytics"])
 
 
 @router.post("/seed")
@@ -34,90 +27,78 @@ def _require_admin(x_admin_key: str | None) -> None:
 def seed_demo_data(
     request: Request,
     force: bool = False,
-    x_admin_key: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+    admin: Optional[User] = Depends(require_admin_or_key),
 ):
-    _require_admin(x_admin_key)
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-
-    existing = db.query(DenialClaim).count()
-    if existing > 0 and not force:  # CHANGED: only skip if not forcing
-        db.close()
+    """Wipe + reseed the *shared demo* claims (user_id NULL). Real users'
+    claims are never touched. Admin JWT or X-Admin-Key only."""
+    demo = DenialClaim.user_id.is_(None)
+    existing = db.scalar(select(func.count(DenialClaim.id)).where(demo)) or 0
+    if existing > 0 and not force:
         return {"message": f"Already seeded with {existing} claims. Pass ?force=true to reseed."}
 
-    # CHANGED: always wipe before reseeding
-    db.query(DenialClaim).delete()
-    db.commit()
+    db.execute(delete(DenialClaim).where(demo))
 
     payers = ["UHC", "Aetna", "BCBS", "Cigna", "Humana"]
     classifications = [
-        "medical_necessity",
-        "prior_authorization",
-        "coding_mismatch",
-        "eligibility",
-        "documentation_gap",
-        "timely_filing"
+        "medical_necessity", "prior_authorization", "coding_mismatch",
+        "eligibility", "documentation_gap", "timely_filing",
     ]
-    cpt_pool = [
-        "29881", "27447", "93306",
-        "70553", "43239", "22612", "29880"
-    ]
+    cpt_pool = ["29881", "27447", "93306", "70553", "43239", "22612", "29880"]
     payer_weights = [0.30, 0.25, 0.20, 0.15, 0.10]
     base_date = datetime(2026, 1, 1)
-    claims = []
 
+    claims = []
     for i in range(120):
         payer = random.choices(payers, weights=payer_weights)[0]
-        cpt = random.choice(cpt_pool)
         classification = random.choices(
-            classifications,
-            weights=[0.35, 0.20, 0.15, 0.10, 0.15, 0.05]
+            classifications, weights=[0.35, 0.20, 0.15, 0.10, 0.15, 0.05]
         )[0]
         service_date = base_date + timedelta(days=random.randint(0, 170))
-        risk_score = random.randint(20, 95)
         billed = random.choice([2400, 3200, 4200, 5800, 7500, 12000])
-
+        appealed = random.choice([0, 1])
         claims.append(DenialClaim(
             payer=payer,
             patient_id=f"P{10000 + i}",
-            cpt_codes=cpt,
+            cpt_codes=random.choice(cpt_pool),
             denial_reason=classification.replace("_", " ").title(),
             classification=classification,
             billed_amount=f"${billed}",
             denied_amount=f"${billed}",
             service_date=service_date.strftime("%Y-%m-%d"),
-            risk_score=risk_score,
-            appeal_generated=random.choice([0, 1]),
-            created_at=service_date.strftime("%Y-%m-%d")
+            risk_score=random.randint(20, 95),
+            appeal_generated=appealed,
+            status="appealed" if appealed else "analyzed",
+            created_at=service_date.strftime("%Y-%m-%d"),
+            user_id=None,
         ))
-
     db.add_all(claims)
+    audit_service.record(db, "admin.seed_demo_data", user=admin, details={"count": len(claims)},
+                         request=request, actor_email=None if admin else "admin-api-key")
     db.commit()
-    db.close()
-
     return {"message": "Successfully seeded 120 demo claims."}
 
 
 @router.get("/by-payer")
-def denials_by_payer():
-    return get_denials_by_payer()
+def denials_by_payer(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return get_denials_by_payer(db, user)
 
 
 @router.get("/by-cpt")
-def denials_by_cpt():
-    return get_denials_by_cpt()
+def denials_by_cpt(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return get_denials_by_cpt(db, user)
 
 
 @router.get("/by-classification")
-def denials_by_classification():
-    return get_denials_by_classification()
+def denials_by_classification(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return get_denials_by_classification(db, user)
 
 
 @router.get("/by-month")
-def denials_by_month():
-    return get_denials_by_month()
+def denials_by_month(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return get_denials_by_month(db, user)
 
 
 @router.get("/summary")
-def summary_stats():
-    return get_summary_stats()
+def summary_stats(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return get_summary_stats(db, user)

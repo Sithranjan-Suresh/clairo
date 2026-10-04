@@ -126,6 +126,7 @@ DOCUMENTATION NOTES: {documentation_notes}
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="risk_scoring",
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )

@@ -269,6 +269,7 @@ RETRIEVED PAYER POLICY EVIDENCE:
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="prior_auth_packet",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
@@ -423,6 +424,7 @@ RETRIEVED POLICY EVIDENCE:
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="prior_auth_check",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )

@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 120
+extend-exclude = ["venv", "alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E501", "B008"]   # B008: FastAPI's Depends() in defaults is idiomatic
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]        # conftest sets env vars before importing the app
+"alembic/env.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

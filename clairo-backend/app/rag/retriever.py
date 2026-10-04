@@ -1,6 +1,9 @@
-import re  # CHANGED: added
-from app.rag.vectorstore import collection
+import re
+
+from app.cache import cached
+from app.config import CACHE_TTL_RETRIEVAL
 from app.rag.embedder import get_embedding
+from app.rag.vectorstore import collection
 
 
 # CHANGED: expanded alias table — handles case, spacing, punctuation variants
@@ -131,7 +134,7 @@ def score_chunk_relevance(chunk_text: str, cpt: str, denial_reason: str) -> int:
     return score
 
 
-def retrieve_policy(payer: str, query: str, top_k: int = 3, classification: str = None, cpt: str = "", denial_reason: str = "") -> list:
+def _retrieve_policy(payer: str, query: str, top_k: int = 3, classification: str = None, cpt: str = "", denial_reason: str = "") -> list:
 
     normalized_payer = normalize_payer(payer)
 
@@ -156,7 +159,7 @@ def retrieve_policy(payer: str, query: str, top_k: int = 3, classification: str 
         return []
 
     scored = []
-    for doc, meta in zip(documents, metadatas):
+    for doc, meta in zip(documents, metadatas, strict=False):
         # CHANGED: also boost score if the chunk's payer matches the normalized request payer
         chunk_payer = normalize_payer(meta.get("payer", ""))
         payer_match_bonus = 2 if chunk_payer == normalized_payer else 0
@@ -182,3 +185,18 @@ def retrieve_policy(payer: str, query: str, top_k: int = 3, classification: str 
         r.pop("relevance_score")
 
     return top_results
+
+
+@cached("retrieval", CACHE_TTL_RETRIEVAL)
+def _retrieve_policy_cached(payer, query, top_k, classification, cpt, denial_reason):
+    return _retrieve_policy(payer, query, top_k, classification, cpt, denial_reason)
+
+
+def retrieve_policy(payer: str, query: str, top_k: int = 3, classification: str = None, cpt: str = "", denial_reason: str = "") -> list:
+    """Cached front door. Embedding the query and scanning the vector index is
+    the slowest non-LLM step in the pipeline, and the same (payer, CPT,
+    denial reason) combinations recur constantly, so identical lookups are
+    served from cache (Redis if configured, in-process otherwise)."""
+    return _retrieve_policy_cached(
+        payer or "", query or "", top_k, classification or "", cpt or "", denial_reason or ""
+    )

@@ -1,17 +1,9 @@
 import json
 import logging
-import os
 
-from groq import Groq
-from dotenv import load_dotenv
-
-from app.services.groq_services import CHAT_MODEL
-
-load_dotenv()
+from app.services.groq_services import CHAT_MODEL, client
 
 logger = logging.getLogger(__name__)
-
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
 class VoiceProcessingError(Exception):
@@ -53,6 +45,7 @@ Return ONLY the JSON. No explanation, no markdown.
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="voice_intent",
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )

@@ -1,11 +1,10 @@
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import io
 
 from app.services.pdf_export_service import generate_appeal_pdf
-from app.services.appeal_service import generate_appeal, get_appeal_viability
-from app.rag.retriever import retrieve_policy
+from app.services.appeal_service import get_appeal_viability
 
 router = APIRouter()
 

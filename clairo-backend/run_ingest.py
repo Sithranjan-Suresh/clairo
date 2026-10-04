@@ -27,7 +27,7 @@ ingest_policy("ARKANSAS_BCBS", "app/data/policies/Coverage Policy Manual - Arkan
 # Excellus BlueCross BlueShield - Autologous Chondrocyte Implantation (ACI)
 ingest_policy("EXCELLUS_BCBS", "app/data/policies/EXC-PRV-Autologous Chrondrocyte Implantation.pdf")
 
-# Cigna / American Specialty Health (ASH) - Clinical Therapy Services 
+# Cigna / American Specialty Health (ASH) - Clinical Therapy Services
 ingest_policy("CIGNA", "app/data/policies/cpg272_electric_stim_clinic.pdf")
 
 ingest_policy("MEDICARE", "app/data/policies/medicare_lcd_knee_arthroscopy.pdf")

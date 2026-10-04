@@ -52,6 +52,7 @@ DOCUMENT TEXT:
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="extraction",
             messages=[
                 {
                     "role": "user",

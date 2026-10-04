@@ -74,6 +74,7 @@ RETRIEVED POLICY EVIDENCE:
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="appeal_generation",
             messages=[
                 {
                     "role": "user",
@@ -90,6 +91,7 @@ RETRIEVED POLICY EVIDENCE:
             "Please retry or review the claim manually.",
             "confidence_score": 0,
             "confidence_rationale": "AI generation unavailable — manual review recommended.",
+            "generation_failed": True,
         }
 
     logger.debug("Appeal raw LLM output: %s", content)
@@ -120,9 +122,10 @@ def safe_json_parse(text: str):
         return {
             "appeal_letter": "Failed to generate appeal.",
             "confidence_score": 0,
-            "confidence_rationale": "JSON parsing failed."
+            "confidence_rationale": "JSON parsing failed.",
+            "generation_failed": True,
         }
-    
+
 def get_appeal_viability(confidence_score: int, classification: str, payer: str) -> dict:
 
     strict_payers = {"UHC", "Cigna", "Anthem"}

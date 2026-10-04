@@ -1,34 +1,41 @@
-import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# ---------------------------------------------------------------------------
-# InsForge Postgres Database
-# ---------------------------------------------------------------------------
-# CLAIRO uses InsForge as its agent-native cloud database backend.
-# InsForge provides a fully managed Postgres database with built-in auth,
-# row-level security, and a context-efficient MCP layer for AI agents.
-#
-# Set INSFORGE_DATABASE_URL in your .env to the connection string from:
-#   npx @insforge/cli db connection-string
-#
-# Falls back to local SQLite for development without an InsForge account.
-# ---------------------------------------------------------------------------
+from app.config import DATABASE_URL, IS_POSTGRES
 
-INSFORGE_DATABASE_URL = os.getenv("INSFORGE_DATABASE_URL")
-
-if INSFORGE_DATABASE_URL:
-    DATABASE_URL = INSFORGE_DATABASE_URL
-    engine = create_engine(DATABASE_URL)
+# CLAIRO runs on InsForge-managed Postgres in production and falls back to a
+# local SQLite file for development/tests.
+if IS_POSTGRES:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,   # managed Postgres drops idle connections
+        pool_size=5,
+        max_overflow=5,
+        pool_recycle=1800,
+    )
 else:
-    # Local SQLite fallback for development
-    DATABASE_URL = "sqlite:///./clairo.db"
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA journal_mode=WAL")  # reader/worker concurrency
+        cur.close()
+
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+
+def get_db():
+    """FastAPI dependency: one session per request, always closed."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

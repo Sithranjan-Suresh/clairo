@@ -1,70 +1,48 @@
-import os
-from unittest.mock import MagicMock, patch
+from sqlalchemy import func, select
 
-import pytest
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from fastapi.testclient import TestClient
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-
-from app.limiter import limiter
-from app.routes.analytics import router as analytics_router
+from app.models import AuditLog, DenialClaim
 
 
-def _build_app():
-    app = FastAPI()
-    app.state.limiter = limiter
-    app.add_exception_handler(
-        RateLimitExceeded,
-        lambda request, exc: JSONResponse(status_code=429, content={"error": "rate limited"}),
-    )
-    app.add_middleware(SlowAPIMiddleware)
-    app.include_router(analytics_router, prefix="/analytics")
-    return app
+def _demo_count(db):
+    return db.scalar(select(func.count(DenialClaim.id)).where(DenialClaim.user_id.is_(None)))
 
 
-@pytest.fixture
-def client():
-    limiter.reset()
-    yield TestClient(_build_app())
-    limiter.reset()
+def test_seed_rejects_anonymous_and_non_admin_users(client, user, auth_headers):
+    assert client.post("/analytics/seed").status_code == 403
+    assert client.post("/analytics/seed", headers=auth_headers(user)).status_code == 403
 
 
-def _mock_db_session():
-    db = MagicMock()
-    db.query.return_value.count.return_value = 0
-    return db
+def test_seed_works_for_admin_jwt_and_is_audited(client, admin, auth_headers, db):
+    res = client.post("/analytics/seed", headers=auth_headers(admin))
+    assert res.status_code == 200
+    assert _demo_count(db) == 120
+    entry = db.scalars(select(AuditLog).where(AuditLog.action == "admin.seed_demo_data")).one()
+    assert entry.actor_email == "admin@example.com" and entry.details == {"count": 120}
 
 
-@patch.dict(os.environ, {"ADMIN_API_KEY": "super-secret"})
-@patch("app.routes.analytics.SessionLocal")
-def test_seed_rejected_without_admin_key(mock_session_local, client):
-    mock_session_local.return_value = _mock_db_session()
-    response = client.post("/analytics/seed")
-    assert response.status_code == 403
+def test_seed_accepts_the_ops_api_key_only_when_configured(client, monkeypatch, db):
+    monkeypatch.setattr("app.security.auth.ADMIN_API_KEY", "ops-secret")
+    assert client.post("/analytics/seed", headers={"X-Admin-Key": "wrong"}).status_code == 403
+    assert client.post("/analytics/seed", headers={"X-Admin-Key": "ops-secret"}).status_code == 200
+    assert _demo_count(db) == 120
+
+    monkeypatch.setattr("app.security.auth.ADMIN_API_KEY", "")
+    # An unset server key must never match an empty/absent header.
+    assert client.post("/analytics/seed", headers={"X-Admin-Key": ""}).status_code == 403
 
 
-@patch.dict(os.environ, {"ADMIN_API_KEY": "super-secret"})
-@patch("app.routes.analytics.SessionLocal")
-def test_seed_rejected_with_wrong_admin_key(mock_session_local, client):
-    mock_session_local.return_value = _mock_db_session()
-    response = client.post("/analytics/seed", headers={"X-Admin-Key": "wrong"})
-    assert response.status_code == 403
+def test_seed_is_idempotent_unless_forced(client, admin, auth_headers, db):
+    h = auth_headers(admin)
+    client.post("/analytics/seed", headers=h)
+    again = client.post("/analytics/seed", headers=h)
+    assert "Already seeded" in again.json()["message"]
+    assert client.post("/analytics/seed?force=true", headers=h).status_code == 200
+    assert _demo_count(db) == 120
 
 
-@patch.dict(os.environ, {"ADMIN_API_KEY": "super-secret"})
-@patch("app.routes.analytics.SessionLocal")
-def test_seed_accepted_with_correct_admin_key(mock_session_local, client):
-    mock_session_local.return_value = _mock_db_session()
-    response = client.post("/analytics/seed", headers={"X-Admin-Key": "super-secret"})
-    assert response.status_code == 200
-
-
-@patch.dict(os.environ, {}, clear=False)
-@patch("app.routes.analytics.SessionLocal")
-def test_seed_allowed_without_admin_key_when_unset(mock_session_local, client, monkeypatch):
-    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
-    mock_session_local.return_value = _mock_db_session()
-    response = client.post("/analytics/seed")
-    assert response.status_code == 200
+def test_reseeding_never_deletes_real_user_claims(client, admin, user, auth_headers, db):
+    db.add(DenialClaim(payer="Cigna", user_id=user.id, status="analyzed", created_at="2026-03-01"))
+    db.commit()
+    client.post("/analytics/seed", headers=auth_headers(admin))
+    client.post("/analytics/seed?force=true", headers=auth_headers(admin))
+    assert db.scalar(select(func.count(DenialClaim.id)).where(DenialClaim.user_id == user.id)) == 1

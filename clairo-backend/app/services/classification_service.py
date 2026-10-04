@@ -48,6 +48,7 @@ CLAIM:
     try:
         response = client.chat.completions.create(
             model=CHAT_MODEL,
+            task="classification",
             messages=[
                 {"role": "user", "content": prompt}
             ],

@@ -1,6 +1,11 @@
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 from app.limiter import limiter
+from app.models import User
+from app.security.auth import get_current_user
 from app.services.voice_service import (
     VoiceProcessingError,
     transcribe_audio,
@@ -16,7 +21,12 @@ MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20 MB
 
 @router.post("/process")
 @limiter.limit("10/minute")
-async def process_voice(request: Request, file: UploadFile = File(...)):
+async def process_voice(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
 
     audio_bytes = await file.read()
     if len(audio_bytes) > MAX_AUDIO_BYTES:
@@ -64,7 +74,7 @@ async def process_voice(request: Request, file: UploadFile = File(...)):
         }
 
     elif intent == "check_analytics":
-        stats = get_summary_stats()
+        stats = get_summary_stats(db, user)
         return {
             "transcript": transcript,
             "intent": intent,

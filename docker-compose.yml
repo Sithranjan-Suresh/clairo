@@ -1,37 +1,86 @@
-# CLAIRO — Docker Compose
-# Starts the FastAPI backend + Vite frontend together.
-# Uses InsForge Postgres when INSFORGE_DATABASE_URL is set; falls back to SQLite.
+# CLAIRO — full local stack: Postgres, Redis, API, background worker, frontend.
 #
-# Usage:
-#   cp clairo-backend/.env.example clairo-backend/.env   # fill in your keys
+#   cp .env.example .env      # add your GROQ_API_KEY (everything else has dev defaults)
 #   docker compose up --build
+#
+# Frontend  http://localhost:5173      API  http://localhost:8000/docs
+# The first account you register is a normal user; set ADMIN_EMAIL/ADMIN_PASSWORD
+# in .env to get an admin (audit log + demo-data reseed).
 
-version: "3.9"
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://clairo:clairo@postgres:5432/clairo
+  REDIS_URL: redis://redis:6379/0
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+  CORS_ORIGINS: http://localhost:5173
+  LOG_JSON: "true"
 
 services:
-  backend:
-    build:
-      context: ./clairo-backend
-      dockerfile: Dockerfile
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clairo
+      POSTGRES_PASSWORD: clairo
+      POSTGRES_DB: clairo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clairo -d clairo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # Cache + shared rate-limit counters; losing it only costs cache hits.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./clairo-backend
+    environment:
+      <<: *backend-env
+      WORKER_ENABLED: "false"          # the dedicated worker service handles jobs
     ports:
       - "8000:8000"
-    env_file:
-      - ./clairo-backend/.env
     volumes:
-      # Not mounting chroma_db: the image builds its own index via
-      # run_ingest.py (see Dockerfile) and a host-mounted empty/stale
-      # directory would shadow it at container start.
-      - ./clairo-backend/app/uploads:/app/app/uploads
+      - uploads:/app/app/uploads       # shared with the worker, which reads the PDFs
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
     restart: unless-stopped
+
+  worker:
+    build: ./clairo-backend
+    command: ["python", "-m", "app.jobs.worker"]
+    environment:
+      <<: *backend-env
+      AUTO_MIGRATE: "false"            # the API owns migrations
+    volumes:
+      - uploads:/app/app/uploads
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+    healthcheck:
+      disable: true                    # no HTTP port; the process exiting is the signal
 
   frontend:
     build:
       context: ./clairo-frontend/clairo-frontend
-      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
     ports:
       - "5173:80"
-    environment:
-      - VITE_API_URL=http://localhost:8000
     depends_on:
-      - backend
+      - api
     restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:

@@ -7,10 +7,13 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-# Override with CLAIRO_API_BASE_URL to point at a local dev server
-# (e.g. http://127.0.0.1:8000) which has the full route set, including
-# /insforge/* and /api/prior-auth-check*, that may not be on every deployment.
-BASE_URL = os.getenv("CLAIRO_API_BASE_URL", "https://web-production-ca7ed.up.railway.app")
+# Override with CLAIRO_API_BASE_URL to point at a local dev server (e.g. http://127.0.0.1:8000).
+BASE_URL = os.getenv("CLAIRO_API_BASE_URL", "https://clairo-4bgp.onrender.com")
+
+# The API requires authentication. Create an account in the web app (or POST /auth/login)
+# and put its access token in CLAIRO_API_TOKEN for the MCP client's environment.
+API_TOKEN = os.getenv("CLAIRO_API_TOKEN", "")
+AUTH_HEADERS = {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
 
 app = Server("clairo-mcp")
 
@@ -167,6 +170,11 @@ def _error_result(detail: str) -> list[TextContent]:
 def _safe_json(response: httpx.Response, step: str):
     """Parse a response as JSON, raising a clear error if the upstream
     endpoint returned a non-JSON body (e.g. a plain-text 500/404 page)."""
+    if response.status_code == 401:
+        raise RuntimeError(
+            f"{step} was rejected as unauthenticated. Set CLAIRO_API_TOKEN to a valid access "
+            "token (log in via the web app or POST /auth/login)."
+        )
     if response.status_code >= 400:
         raise RuntimeError(
             f"{step} failed with HTTP {response.status_code}: {response.text[:300]}"
@@ -182,7 +190,7 @@ def _safe_json(response: httpx.Response, step: str):
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, headers=AUTH_HEADERS) as client:
 
             if name == "score_claim":
                 response = await client.post(

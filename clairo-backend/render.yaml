@@ -3,23 +3,36 @@ services:
     name: clairo-api
     runtime: python
     # run_ingest.py rebuilds the ChromaDB policy index from the PDFs in
-    # app/data/policies/ — it's not committed to the repo, so every deploy
+    # app/data/policies/ - it is not committed to the repo, so every deploy
     # regenerates it fresh from source.
     buildCommand: pip install -r requirements.txt && python run_ingest.py
-    # Render assigns the actual listening port via $PORT at runtime — a
-    # hardcoded port here can silently fail Render's health check and leave
-    # the deploy stuck "in progress" even after a successful build.
-    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Render assigns the port via $PORT. --proxy-headers makes uvicorn trust the
+    # load balancer's X-Forwarded-For so rate limits/audit logs see real client IPs.
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /health
     envVars:
       - key: GROQ_API_KEY
         sync: false
+      - key: INSFORGE_DATABASE_URL
+        sync: false
+      # Signs login tokens. Generated once by Render; rotating it logs everyone out.
+      - key: JWT_SECRET
+        generateValue: true
+      # Creates/refreshes the one admin account (audit log, demo-data reseed, /metrics).
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Optional: ops-script access to /metrics and /analytics/seed via X-Admin-Key.
       - key: ADMIN_API_KEY
         sync: false
       - key: CORS_ORIGINS
         sync: false
-      # Pin the runtime — Render's Python "latest" default (3.14 as of this
-      # writing) is newer than psycopg2-binary==2.9.9 has compiled wheels
-      # for, which crashes on import with an ABI-mismatch symbol error.
-      # 3.11 is what this project is developed and tested against.
+      # Optional: Redis URL (e.g. a free Upstash/Render Key Value instance) for a shared
+      # cache and rate limits. Without it both fall back to in-process memory.
+      - key: REDIS_URL
+        sync: false
+      # Pin the runtime - Render's "latest" Python (3.14) has no psycopg2-binary wheel,
+      # which crashes on import with an ABI-mismatch error. 3.11 is what we test on.
       - key: PYTHON_VERSION
         value: 3.11.9

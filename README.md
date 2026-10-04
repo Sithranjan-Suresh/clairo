@@ -1,433 +1,228 @@
 # CLΔIRO — Denial Intelligence Platform
 
-> AI-powered insurance denial management, built on InsForge's agent-native cloud database.
+> AI-assisted insurance denial management: upload a denial, get a risk score, payer-policy evidence, and a citation-grounded appeal letter — as a production-style full-stack system with auth, a queued AI pipeline, an audit trail, and CI/CD.
 
-**Live demo:** [clairo-claims.vercel.app](https://clairo-claims.vercel.app) · Backend API: [clairo-4bgp.onrender.com](https://clairo-4bgp.onrender.com) ([Swagger docs](https://clairo-4bgp.onrender.com/docs))
+**Live demo:** [clairo-claims.vercel.app](https://clairo-claims.vercel.app) · API: [clairo-4bgp.onrender.com](https://clairo-4bgp.onrender.com) ([Swagger](https://clairo-4bgp.onrender.com/docs))
 
-> The backend is on Render's free tier and spins down after ~15 min idle — the first request after a quiet period can take 30-60s to cold-start. That's expected, not a bug.
-
-CLAIRO is a full-stack AI platform that helps healthcare providers fight insurance denials. It parses denial PDFs, classifies denials, scores claim risk, runs prior authorization pre-checks against real payer policies, generates citation-backed appeal letters via Groq LLMs, and exposes every tool via an MCP server so AI agents can autonomously orchestrate the full denial-to-appeal pipeline.
-
-**InsForge is CLAIRO's persistent memory.** Every denial processed, every risk score computed, and every appeal generated is stored in InsForge Postgres — giving CLAIRO agents real historical context before they act, and giving the practice a live, queryable record of their entire denial history.
+> Free-tier hosting: the API sleeps after ~15 min idle, so the first request can take 30–60 s to wake it. Sign-up takes seconds; shared demo data is visible to every account.
 
 ---
 
-## Tech Stack
+## Architecture
+
+```
+                         ┌────────────────────┐
+                         │  React 19 client   │  JWT in Authorization header
+                         └─────────┬──────────┘
+                                   │ HTTPS
+                         ┌─────────▼──────────┐
+                         │   FastAPI  (REST)  │  routes → services → repositories → models
+                         │  auth · RBAC · rate│  request-id · JSON logs · /metrics
+                         │  limits · audit    │
+                         └──┬──────┬───────┬──┘
+              enqueue job   │      │       │  cache / rate-limit counters
+            ┌───────────────▼┐  ┌──▼────┐ ┌▼────────────────────┐
+            │   PostgreSQL    │  │Chroma │ │ Redis (optional) or │
+            │ users · claims  │  │ index │ │ in-process fallback │
+            │ documents ·     │  └──▲────┘ └─────────────────────┘
+            │ appeals · risk  │     │ retrieval
+            │ history · audit │  ┌──┴─────────────────────────────┐
+            │ jobs · policies │◄─┤ Background worker (thread or    │
+            └─────────────────┘  │ separate process, SKIP LOCKED)  │
+                                 │ PDF → extract → classify → score│
+                                 │ → RAG → appeal  (Groq LLM)      │
+                                 └─────────────────────────────────┘
+```
+
+**Why a Postgres-backed queue instead of Celery/Redis?** Jobs are rows in a `jobs` table claimed with `SELECT … FOR UPDATE SKIP LOCKED`: transactional with the claim they belong to, durable across restarts, and zero extra infrastructure — which keeps the whole system deployable on free tiers. Workers run as an in-process thread by default and as a dedicated container under Docker Compose; both can run at once without double-processing. Redis is used where it earns its keep (shared cache + shared rate-limit counters) and is optional.
+
+## What it does
+
+| Area | Details |
+|---|---|
+| **Claim pipeline** | Upload a denial PDF → PyMuPDF text → LLM structured extraction → denial classification → hybrid risk score (rules 0–60 + LLM documentation review 0–40) → stored with a full score history |
+| **Appeal letters** | RAG over 20+ real payer policy PDFs (ChromaDB, ONNX MiniLM embeddings, sentence-aware chunking with overlap, keyword rerank, payer-alias normalization) → grounded, citation-bearing letter with a confidence score; PDF export |
+| **Prior-auth pre-check** | Per-requirement checklist against the retrieved payer policy, from clinical notes and/or uploaded documents |
+| **Claims workspace** | Server-side search / filter / sort / pagination, live status while jobs run, risk breakdown + history, appeal + citations, per-claim audit timeline |
+| **Policy library** | Browse indexed policies by payer; semantic search across them |
+| **Analytics** | Denials by payer, CPT code, denial type and month vs industry benchmarks |
+| **Voice** | Whisper transcription → intent → routed action |
+| **MCP server** | 7 tools so an AI agent can run the denial→appeal workflow (see below) |
+| **Admin** | Audit log of every action, `/metrics`, demo-data reseed |
+
+## Engineering highlights
+
+- **Auth & RBAC** — bcrypt (SHA-256 pre-hash so long passphrases stay fully significant), JWT access tokens, `user`/`admin` roles. Admins exist only via `ADMIN_EMAIL`/`ADMIN_PASSWORD` env bootstrap — self-registration can never mint one. Login failures are indistinguishable and timing-equalized (no account enumeration). Users see their own claims plus shared demo data; other tenants' claims are 404, and the LLM prompts are built only from data the caller may see.
+- **PostgreSQL schema** — `users, denial_claims, documents, appeals, risk_scores, audit_logs, jobs, payer_policies` with foreign keys, composite indexes for the hot query paths, and transactional writes (claim + document + job + audit row commit together; a failed commit also removes the saved file).
+- **Migrations** — Alembic, applied automatically at startup. The baseline is idempotent so it adopts the already-live `denial_claims` table without touching its rows; a test migrates a legacy-schema database and asserts rows survive, and another fails if models and migrations drift.
+- **Reliability** — job retries with exponential backoff (5 s → 10 s → 20 s), permanent-vs-transient error classes, stale-job recovery if a worker dies, terminal `failed` state with a user-visible reason and a one-click re-analyze.
+- **Caching** — retrieval results and per-document extraction (keyed by SHA-256, so re-uploading the same PDF skips the LLM call). Redis outage degrades to a cache miss, never an error.
+- **Observability** — structured JSON logs with request IDs (also stored on audit rows), Prometheus metrics for HTTP latency/status by *route template*, LLM latency/outcome per task, job outcomes and cache hit/miss, `/health` with a DB check.
+- **Safety** — per-user rate limits (per IP when anonymous, using the real client IP behind the proxy), strict upload validation (type, magic bytes, size, server-generated filenames), request-size guard, security headers, no raw vendor/model errors in user-facing fields, XSS-escaped print view.
+- **Model deprecation resilience** — the LLM model id lives in one constant (`GROQ_CHAT_MODEL` overrides it). Groq retiring a model once took every AI feature down in production; the fix and the regression tests came out of a live end-to-end test pass.
+
+### Measured: retrieval cache
+
+`python clairo-backend/scripts/benchmark_cache.py` on the real policy index (60 distinct payer/CPT/reason lookups, in-process cache, developer laptop):
+
+| | mean | median | p95 |
+|---|---|---|---|
+| cold (embed query + vector scan) | 323.5 ms | 305.2 ms | 517.1 ms |
+| warm (cache hit) | 0.02 ms | 0.02 ms | 0.04 ms |
+
+Redis adds one network round-trip per hit, so expect low single-digit milliseconds there; the benchmark uses whichever backend `REDIS_URL` selects.
+
+## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
-| **Database** | **InsForge** (managed Postgres) — agent-native, MCP-accessible |
-| **Backend** | FastAPI + SQLAlchemy + ChromaDB |
-| **LLM / Voice** | Groq — LLaMA 3.3 70B + Whisper Large v3 |
-| **Vector Search** | ChromaDB with its built-in ONNX MiniLM-L6-v2 embedder (20+ real payer PDFs) — deliberately not sentence-transformers/PyTorch, which is 300-500MB heavier at runtime for the same model |
-| **MCP Server** | 7 tools including `insforge_query` for live DB access |
-| **Frontend** | React 19 + Vite + Recharts |
-| **Deployment** | Render (backend) + Vercel (frontend), rate-limited (slowapi) with an admin-gated seed endpoint |
+|---|---|
+| Frontend | React 19, Vite, Recharts, Tailwind 4, Framer Motion |
+| API | FastAPI, SQLAlchemy 2, Pydantic 2, slowapi, PyJWT, bcrypt |
+| Data | PostgreSQL ([InsForge](https://insforge.dev) managed; SQLite fallback), Alembic, ChromaDB |
+| AI | Groq — `openai/gpt-oss-120b` (chat), Whisper large-v3 (voice); ChromaDB's ONNX MiniLM-L6-v2 embedder (deliberately not PyTorch — see below) |
+| Infra | Docker Compose, GitHub Actions, Render + Vercel |
+| Quality | pytest (120 tests, run against SQLite *and* Postgres in CI), ruff, ESLint |
 
----
+**Why ONNX embeddings, not sentence-transformers?** Same model, same 384-d vectors, but `sentence-transformers` drags in PyTorch (300–500 MB resident), which got the service OOM-killed on a 512 MB instance. Measured now: ~146 MB after import, ~218 MB after startup with the worker running and the embedder loaded.
 
-## How InsForge Fits
+## Run it
 
-```
-   Denial PDF Upload
-         │
-         ▼
-   CLAIRO FastAPI ──── InsForge Postgres ◄──── AI Agent (MCP)
-         │                    │                      │
-    Risk Scoring         Stores every           insforge_query tool
-    RAG Retrieval        claim + result         reads live DB context
-    Appeal Gen                                  before acting
-         │
-         ▼
-   InsForge DB updated ──► Live Feed shown in InsForge tab
-```
-
-CLAIRO's MCP server exposes an `insforge_query` tool that lets any MCP-compatible agent (Claude, Cursor, Copilot) query the InsForge Postgres database directly for live claim context before running risk scoring or appeal generation. This is the "agentic loop" — InsForge is not just storage, it's the agent's memory.
-
----
-
-## Features
-
-### 1. Upload & Extract
-Upload any insurance denial PDF. CLAIRO extracts payer, patient ID, CPT codes, denial reason, billed/denied amounts, and service date using Groq LLM, then classifies the denial and scores its risk. Every result is stored in InsForge Postgres.
-
-### 2. Denial Risk Scoring
-Hybrid rule-based + LLM documentation analysis. Flags prior auth requirements, bundling risks, and documentation gaps. Returns a 0–100 risk score with specific remediation recommendations.
-
-### 3. Appeal Letter Generator
-Generates a formal, citation-backed appeal letter grounded in retrieved payer policy evidence. Returns appeal strength rating (Strong/Moderate/Weak), confidence score, and industry context from AHA 2023 data. Export as PDF.
-
-### 4. Prior Authorization Pre-Check
-Per-requirement policy checklist before filing a PA request. Retrieves the real payer policy from ChromaDB and evaluates each criterion against the clinical notes. Returns `pa_required`, gap flags, urgency level, and a single actionable recommendation.
-
-### 5. Policy Citation Retrieval
-Semantic search over 20+ real payer policy PDFs (Aetna, UHC, BCBS, Cigna, Medicare, and more). Payer-specific policies receive a relevance bonus and results are keyword-reranked for clinical criteria sections.
-
-### 6. InsForge Live Database
-A dedicated tab showing the live InsForge Postgres backend — real-time claim feed, aggregate stats (total claims, high-risk count, appeal rate), and an autonomous agent query interface that reads from InsForge before synthesizing denial intelligence.
-
-### 7. Analytics Dashboard
-Practice-level analytics: denials by payer, by category, by CPT code, and by month. Includes industry benchmark comparison. Payer name normalization merges variants (UHC / UnitedHealthCare / UNITEDHEALTHCARE).
-
-### 8. Voice AI
-Record or upload an audio file. Groq Whisper Large v3 transcribes it, LLM parses the intent, and CLAIRO routes to the right endpoint — returning both a structured result and a plain-English voice response.
-
-### 9. MCP Server
-7 tools for autonomous agent orchestration: `score_claim`, `generate_appeal`, `retrieve_policy`, `check_appeal_viability`, `get_analytics_summary`, `run_full_pipeline`, and `insforge_query`.
-
----
-
-## Setup & Running
-
-### Prerequisites
-
-| Requirement | Notes |
-|-------------|-------|
-| Python 3.10+ | Backend |
-| Node.js 18+ | Frontend |
-| [Groq API key](https://console.groq.com) | Free — LLM + Whisper |
-| [InsForge account](https://insforge.dev) | Free — Postgres database |
-
----
-
-### Step 1 — InsForge Database Setup
-
-CLAIRO uses [InsForge](https://insforge.dev) as its agent-native cloud database. Sign up free at insforge.dev, then:
+### Docker (recommended — Postgres, Redis, API, worker, frontend)
 
 ```bash
-# Install and authenticate the InsForge CLI (always via npx)
-npx @insforge/cli login
-
-# From the repo root, link this directory to your InsForge project
-npx @insforge/cli link
-
-# Verify
-npx @insforge/cli current
+cp .env.example .env            # add GROQ_API_KEY; optionally ADMIN_EMAIL / ADMIN_PASSWORD / JWT_SECRET
+docker compose up --build
 ```
+Frontend http://localhost:5173 · API docs http://localhost:8000/docs. The API image builds the policy vector index at build time.
 
-Apply the CLAIRO schema migration:
+### Without Docker
 
 ```bash
-npx @insforge/cli db migrations up --all
-# This runs: migrations/001_create_denial_claims.sql
+# backend
+cd clairo-backend
+python -m venv venv && venv\Scripts\activate        # source venv/bin/activate on Mac/Linux
+pip install -r requirements-dev.txt
+cp .env.example .env                                  # GROQ_API_KEY, optional INSFORGE_DATABASE_URL (SQLite otherwise)
+python run_ingest.py                                  # build the policy index (once)
+uvicorn app.main:app --reload                         # migrations + worker start automatically
+
+# frontend
+cd clairo-frontend/clairo-frontend && npm install && npm run dev     # http://localhost:5173
 ```
 
-Get your connection string:
+InsForge Postgres (optional): `npx @insforge/cli login`, `link`, then `npx @insforge/cli db connection-string` → `INSFORGE_DATABASE_URL`.
 
-```bash
-npx @insforge/cli db connection-string
-# Copy the output — paste it into .env as INSFORGE_DATABASE_URL
-```
-
-> **No InsForge account?** The backend automatically falls back to a local SQLite file (`clairo.db`). All features work. The InsForge tab will show a "local fallback" banner instead of cloud stats.
-
----
-
-### Step 2 — Backend
+### Tests
 
 ```bash
 cd clairo-backend
-python -m venv venv
-
-# Activate
-source venv/bin/activate     # Mac/Linux
-venv\Scripts\activate        # Windows
-
-pip install -r requirements.txt
+pytest -q                                   # SQLite (throwaway file)
+TEST_DATABASE_URL=postgresql://user:pw@localhost/clairo_test pytest -q   # real Postgres
+ruff check .
 ```
+Covered: auth & RBAC, tenant isolation, upload validation (wrong type/magic bytes/oversize/traversal filename), the full upload→analyze→appeal→audit flow, retry/backoff and permanent failure, stale-job recovery, cache TTL/eviction/Redis-outage fallback, migrations (idempotency, legacy data, model drift, downgrade), metrics label cardinality, per-user rate limiting. The LLM is always mocked, so the suite is deterministic and free.
 
-Create `.env` in `clairo-backend/` (copy from `.env.example`):
+## API
 
-```bash
-cp .env.example .env
-```
+All endpoints except `/auth/*`, `/health` and `/` need `Authorization: Bearer <token>`. Interactive docs at `/docs`.
 
-Then fill in:
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/auth/register`, `/auth/login` | returns `{access_token, user}` |
+| GET | `/auth/me` | current user |
+| POST | `/claims` | multipart PDF → `202 {claim_id, job_id}`; analysis runs in the background |
+| GET | `/claims` | `q, payer, classification, status, risk, sort_by, order, limit, offset` → `{items,total,…}` |
+| GET | `/claims/{id}` | detail incl. risk history, appeals + citations, documents |
+| POST | `/claims/{id}/analyze` · `/claims/{id}/appeal` | `202 {job_id}`; owner or admin |
+| GET | `/claims/{id}/audit` | event history |
+| GET | `/jobs/{id}` | `queued → running → succeeded / failed` |
+| GET | `/policies` · `/policies/search?q=` | policy library / semantic search |
+| GET | `/audit-logs` | admin: filter by action/user, paginated |
+| GET | `/analytics/{summary,by-payer,by-cpt,by-classification,by-month}` | scoped to the caller |
+| POST | `/analytics/seed` | admin JWT or `X-Admin-Key`; only touches shared demo claims |
+| POST | `/risk/score-claim` · `/risk/score-queue` | stateless scoring (queue capped at 25) |
+| GET | `/rag/retrieve` | stateless policy retrieval |
+| POST | `/appeal/generate-from-claim` · `/export/export-pdf` · `/export/viability` | stateless helpers |
+| POST | `/api/prior-auth-check` · `/api/prior-auth-check-documents` | prior-auth pre-check |
+| POST | `/voice/process` | audio → intent → result |
+| GET/POST | `/insforge/status`, `/live-claims`, `/agent-run` | live DB view + agent query |
+| GET | `/health` · `/metrics` | `/metrics` is admin-only (JWT or `X-Admin-Key`) |
 
-```env
-GROQ_API_KEY=your_groq_api_key_here
-INSFORGE_DATABASE_URL=postgresql://...   # from: npx @insforge/cli db connection-string
-```
+Rate limits (per user, or per IP when anonymous): 120/min default; upload, appeal and analysis 10/min; login 10/min; registration 5/min; seed 3/min; queue scoring 5/min. Exceeding returns `429` with `Retry-After`.
 
-Build the policy vector index (ChromaDB is not committed to the repo — it's
-regenerated locally from the PDFs in `app/data/policies/`):
+## MCP server
 
-```bash
-python run_ingest.py
-```
-
-Start the backend:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-- API: **http://localhost:8000**
-- Swagger: **http://localhost:8000/docs**
-
----
-
-### Step 3 — Frontend
-
-```bash
-cd clairo-frontend/clairo-frontend
-npm install
-npm run dev
-```
-
-Frontend: **http://localhost:5173**
-
----
-
-### Step 4 — Seed Demo Data (optional)
-
-Go to the **Analytics** tab → click **Seed Demo Data**. This inserts 120 synthetic denial claims into InsForge Postgres and populates all charts. The **InsForge** tab will immediately show a live feed of those claims.
-
-This button only works when the backend's `ADMIN_API_KEY` (if set) matches the frontend's `VITE_ADMIN_API_KEY`. **Don't set `VITE_ADMIN_API_KEY` on a public deployment** — any `VITE_`-prefixed variable is baked into the public JS bundle, so it would no longer be a secret. Seed a public deployment from the command line instead:
-```bash
-curl -X POST "https://<your-backend>/analytics/seed?force=true" -H "X-Admin-Key: <your ADMIN_API_KEY>"
-```
-
----
-
-### Step 5 — MCP Server (optional, for agent use)
+`clairo-backend/mcp_server.py` exposes 7 tools (`score_claim`, `generate_appeal`, `retrieve_policy`, `check_appeal_viability`, `get_analytics_summary`, `insforge_query`, `run_full_pipeline`) over stdio so MCP clients (Claude, Cursor, …) can drive the workflow.
 
 ```bash
 cd clairo-backend
-python mcp_server.py
-
-# Test with the MCP inspector (run from inside clairo-backend so the
-# filename resolves correctly — no path prefix needed):
+export CLAIRO_API_BASE_URL=http://127.0.0.1:8000     # default: the deployed API
+export CLAIRO_API_TOKEN=<access token from POST /auth/login>   # the API requires auth
 npx @modelcontextprotocol/inspector python mcp_server.py
 ```
 
-> **Note:** Run the inspector command from inside `clairo-backend`. If you pass a
-> path like `clairo-backend/mcp_server.py` from a different working directory, some
-> shells/inspector versions mis-join it (e.g. `clairo-backendmcp_server.py`) and
-> you'll get a "can't open file" error.
+## Configuration
 
-The MCP server exposes 7 tools including `insforge_query`, which lets any MCP-compatible AI agent (Claude, Cursor, Copilot) query the InsForge database directly before running denial analysis.
+| Variable | Where | Purpose |
+|---|---|---|
+| `GROQ_API_KEY` | API | LLM + Whisper (**required**) |
+| `INSFORGE_DATABASE_URL` / `DATABASE_URL` | API | Postgres; SQLite file if unset |
+| `JWT_SECRET` | API | token signing — **set it in production** (an ephemeral one is generated otherwise and every restart logs everyone out) |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | API | create/refresh the admin account at startup |
+| `ADMIN_API_KEY` | API | optional header key for ops scripts (`/metrics`, `/analytics/seed`) |
+| `REDIS_URL` | API | optional shared cache + rate limits |
+| `CORS_ORIGINS` | API | extra allowed frontend origins (`*.vercel.app` etc. already allowed) |
+| `GROQ_CHAT_MODEL` | API | override the chat model without a deploy |
+| `WORKER_ENABLED`, `AUTO_MIGRATE`, `ALLOW_REGISTRATION`, `LOG_LEVEL`, `LOG_JSON`, `JWT_EXPIRE_MINUTES` | API | operational toggles |
+| `VITE_API_URL` | frontend build | API base URL (**never put secrets in `VITE_*`** — they ship in the bundle) |
 
-By default the server talks to the deployed CLAIRO API. To point it at your local
-backend instead (e.g. `http://127.0.0.1:8000`, useful for routes like `/insforge/*`
-that may not exist on every deployment), set:
+## CI/CD
 
-```bash
-# Mac/Linux
-export CLAIRO_API_BASE_URL=http://127.0.0.1:8000
+`.github/workflows/ci.yml`: on every push/PR — backend lint + tests on **SQLite and a real Postgres service container**, frontend lint + build, Docker image builds and compose validation. On `main`, after everything is green, an optional **deploy** job runs when these repo secrets exist:
 
-# Windows (PowerShell)
-$env:CLAIRO_API_BASE_URL = "http://127.0.0.1:8000"
+- `RENDER_DEPLOY_HOOK_URL` (Render → service → Settings → Deploy Hook) — triggers the API deploy, then polls `/health` until it's up
+- `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` — deploys the frontend
+
+Optional repo variable `BACKEND_URL` overrides the health-check URL.
+
+### Deploying by hand
+
+**Render (API):** New → Web Service → this repo, root `clairo-backend` (`render.yaml` is picked up). Set `GROQ_API_KEY`, `INSFORGE_DATABASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`; `JWT_SECRET` is generated. Migrations run on boot.
+**Vercel (frontend):** root `clairo-frontend/clairo-frontend`, `VITE_API_URL=<api url>`.
+
+## Known limitations
+
+- Free-tier cold starts; the in-process worker shares the web instance's CPU/RAM (move to the Compose-style dedicated worker for real load).
+- Uploaded PDFs live on local disk: API and worker must share a volume (Compose does). Multi-host scaling needs object storage (S3/R2).
+- Scanned/image-only PDFs aren't OCR'd — they fail with a clear message.
+- Tokens are not revocable before expiry (no refresh/denylist yet); `JWT_EXPIRE_MINUTES` bounds exposure.
+- Analytics' "practice denial rate" is an illustrative constant — true rates need submitted-claim volume, which isn't tracked.
+- Not HIPAA-compliant: don't load real patient data without a compliance review (encryption at rest, BAAs, retention policy).
+
+## Project structure
+
+```
+clairo-backend/
+  app/
+    main.py            app factory, lifespan (migrate → bootstrap admin → sync policy catalog → worker)
+    config.py          typed env configuration
+    models/            SQLAlchemy models (one file per table)
+    schemas/           Pydantic request/response models
+    repositories/      all SQL: users, claims (filters/pagination), audit, jobs (SKIP LOCKED)
+    services/          claim pipeline, auth, audit, analytics, LLM services
+    routes/            thin HTTP layer
+    security/          hashing, JWT, auth dependencies
+    jobs/              worker + handlers
+    rag/               ingest, embedder, retriever, vector store
+    cache.py · limiter.py · observability.py
+  alembic/versions/    0001 baseline (idempotent) · 0002 production schema
+  tests/               120 tests · scripts/benchmark_cache.py · mcp_server.py
+clairo-frontend/clairo-frontend/src/
+  auth/                AuthContext, AuthScreen
+  components/          ClaimsDashboard, PolicyLibrary, AuditLogPanel, intake/appeal/prior-auth/analytics panels
+.github/workflows/ci.yml · docker-compose.yml
 ```
 
-All tool calls now return structured `{"error": "..."}` JSON instead of crashing
-the MCP connection if the backend is unreachable or returns an unexpected response.
+## Supported payers & policies
 
----
-
-### Docker (optional)
-
-```bash
-# From the repo root
-cp clairo-backend/.env.example clairo-backend/.env  # fill in keys
-docker compose up --build
-```
-
-- Frontend: http://localhost:5173
-- Backend: http://localhost:8000
-
----
-
-## Project Structure
-
-```
-clairo/                                  # repo root
-├── docker-compose.yml
-├── migrations/
-│   └── 001_create_denial_claims.sql    # InsForge DB migration
-├── clairo-backend/
-│   ├── .env.example
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── mcp_server.py                   # MCP server — 7 tools incl. insforge_query
-│   ├── app/
-│   │   ├── database.py                 # InsForge Postgres (SQLite fallback)
-│   │   ├── main.py
-│   │   ├── models.py
-│   │   ├── routes/
-│   │   │   ├── insforge.py             # /insforge/status, /live-claims, /agent-run
-│   │   │   ├── upload.py
-│   │   │   ├── appeal.py
-│   │   │   ├── prior_auth.py
-│   │   │   ├── risk.py
-│   │   │   ├── export.py
-│   │   │   ├── rag.py
-│   │   │   ├── analytics.py
-│   │   │   └── voice.py
-│   │   ├── services/
-│   │   ├── rag/
-│   │   └── data/policies/              # 20+ real payer policy PDFs
-│   └── chroma_db/                      # Vector store (generated by run_ingest.py, not committed)
-└── clairo-frontend/
-    └── clairo-frontend/
-        ├── Dockerfile
-        └── src/
-            ├── components/
-            │   ├── InsforgePanel.jsx   # Live DB feed + agent query UI
-            │   ├── AnalyticsPanel.jsx
-            │   ├── AppealPanel.jsx
-            │   ├── PriorAuthPanel.jsx
-            │   ├── RiskHeatmap.jsx
-            │   ├── VoiceAIPanel.jsx
-            │   └── ...
-            └── api.js
-```
-
----
-
-## InsForge Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/insforge/status` | DB health check + live stats (total claims, high risk, appeal rate) |
-| GET | `/insforge/live-claims` | Latest N claims from InsForge Postgres, newest first |
-| POST | `/insforge/agent-run` | Autonomous agent: queries InsForge DB then synthesizes denial intelligence |
-
----
-
-## MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `insforge_query` | **Query InsForge Postgres** for live claim stats and history. Gives agents historical context before acting. |
-| `score_claim` | Score a claim for denial risk (0–100) |
-| `generate_appeal` | Generate citation-backed appeal letter |
-| `retrieve_policy` | Retrieve payer policy sections via semantic search |
-| `check_appeal_viability` | Get appeal strength rating |
-| `get_analytics_summary` | Practice analytics + industry benchmark |
-| `run_full_pipeline` | Autonomous end-to-end denial-to-appeal pipeline |
-
----
-
-## API Endpoints
-
-### Upload & Extraction
-| POST | `/upload` | Upload denial PDF → structured claim + classification + risk score |
-
-### Appeal
-| POST | `/appeal/generate-from-claim` | Generate appeal from upload output |
-| POST | `/appeal/generate-appeal` | Demo appeal (hardcoded claim) |
-
-### Prior Authorization
-| POST | `/api/prior-auth-check` | PA pre-submission gap analysis |
-
-### Risk
-| POST | `/risk/score-claim` | Score single claim (0–100) |
-| POST | `/risk/score-queue` | Score batch of claims, sorted by risk |
-
-### Export
-| POST | `/export/export-pdf` | Download formatted appeal letter as PDF |
-| POST | `/export/viability` | Appeal strength rating |
-
-### RAG
-| GET | `/rag/retrieve` | Retrieve reranked policy chunks |
-
-### Analytics
-| POST | `/analytics/seed` | Seed 120 demo claims (add `?force=true` to reseed) |
-| GET | `/analytics/summary` | Practice stats + benchmark |
-| GET | `/analytics/by-payer` | Denials by payer |
-| GET | `/analytics/by-cpt` | Denials by CPT code |
-| GET | `/analytics/by-classification` | Denial type distribution |
-| GET | `/analytics/by-month` | Monthly trend |
-
-### Voice
-| POST | `/voice/process` | Audio file → transcription → intent → routed result |
-
----
-
-## Supported Payers & Policies
-
-| Payer | Policy |
-|-------|--------|
-| UHC | Knee arthroscopy, spine surgery, MSK imaging |
-| Aetna | Medical necessity, MSK policy |
-| BCBS TX | Orthopedic surgical policy |
-| BCBS Arkansas | Meniscal transplantation |
-| Cigna | Electric stimulation clinical guidelines + cardiac imaging |
-| Medicare | LCD for knee arthroscopy (CMS.gov) |
-| CHPW | Knee arthroscopy and arthroplasty |
-| Centene/Health Net | Articular cartilage defect repairs |
-| Excellus BCBS | Autologous chondrocyte implantation |
-
-Adding a policy: drop the PDF in `app/data/policies/`, add one line to `run_ingest.py`, run `python run_ingest.py`.
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GROQ_API_KEY` | **Yes** | Groq API key for LLM and Whisper |
-| `INSFORGE_DATABASE_URL` | Recommended | InsForge Postgres connection string. Falls back to SQLite if unset. |
-| `CHROMA_PATH` | No | ChromaDB storage path (default: `chroma_db`) |
-| `ADMIN_API_KEY` | Recommended for prod | Gates `POST /analytics/seed` (wipes + reseeds all claims) behind an `X-Admin-Key` header. Unset = open in dev. |
-| `CORS_ORIGINS` | Recommended for prod | Comma-separated extra allowed frontend origins. |
-| `LOG_LEVEL` | No | Python logging level (default: `INFO`). |
-
-Frontend (`clairo-frontend/clairo-frontend/.env`):
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `VITE_API_URL` | **Yes** | Backend base URL. |
-| `VITE_ADMIN_API_KEY` | Local dev only | Must match `ADMIN_API_KEY`, or "Seed Demo Data" gets a 403. **Never set this in a public deployment** — `VITE_`-prefixed vars ship in the public JS bundle, so it stops being a secret. Seed a public deployment via `curl` instead (see Step 4 above). |
-
----
-
-## Production Deployment
-
-CLAIRO ships with `render.yaml` (backend) and a static-build frontend that works on Vercel/Netlify. Before pointing real users at a deployment:
-
-### Safety measures already built in
-- **Rate limiting** (`slowapi`, in-memory per-IP): every LLM-backed endpoint is capped — uploads and appeal generation at 10/min, prior-auth and voice at 5–10/min, analytics seeding at 3/min, everything else at a 60/min default. Exceeding a limit returns `429`.
-- **Admin-gated destructive endpoint** — `POST /analytics/seed` wipes and reseeds the entire claims table. Set `ADMIN_API_KEY` in production so only requests carrying the matching `X-Admin-Key` header can call it.
-- **Upload hardening** — server-generated filenames (no path traversal), PDF-only content-type check, 15MB size caps on PDFs and prior-auth documents, 20MB on voice audio, and a batch cap (25 claims) on the risk-queue endpoint so one request can't trigger unbounded Groq calls.
-- **Request size guard** — a global middleware rejects JSON bodies over 2MB before they're parsed.
-- **Security headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` on every response.
-- **CORS** — explicit origin allowlist (`CORS_ORIGINS`) plus a regex for common preview-hosting subdomains; `allow_credentials` is `False` since the app never uses cookies, so the broad regex carries no session-leakage risk.
-- **Fail-loud config** — the backend logs a critical warning at startup if `GROQ_API_KEY` is missing, instead of failing mysteriously on the first request.
-
-### Known limitations to weigh before a public launch
-- There is no user authentication — anyone with the URL can use every feature (subject to the rate limits above). Fine for a demo/portfolio deployment; add real auth before handling real patient data.
-- `analytics_service.get_summary_stats()` includes a few illustrative constants (e.g. `practice_denial_rate`) rather than figures computed from real submitted-claims volume, since that data isn't tracked. Labeled here so it's not mistaken for a live metric.
-- Uploaded PDFs and prior-auth documents accumulate on disk indefinitely; add a retention/cleanup job if deploying somewhere with persistent storage.
-- This handles PHI-shaped data (patient IDs, clinical notes) without encryption-at-rest guarantees beyond whatever the InsForge/Postgres provider offers — don't feed it real patient data without a proper compliance review.
-
-### Deploying
-
-This repo is live at the URLs linked at the top of this README — here's how it's wired:
-
-**Backend (Render):**
-```bash
-# From the repo root, push to GitHub, then in Render:
-# New > Web Service > connect this repo > set Root Directory to clairo-backend
-# render.yaml is auto-detected and handles the build/start commands.
-```
-Set `GROQ_API_KEY`, `ADMIN_API_KEY`, and `INSFORGE_DATABASE_URL` in Render's environment tab. Optionally pin `CORS_ORIGINS` to your frontend's exact URL — the CORS regex already covers any `*.vercel.app`/`*.netlify.app`/`*.onrender.app`/`*.railway.app` domain, so this isn't required, just a bit tighter.
-
-**Frontend (Vercel/Netlify):** set the project root to `clairo-frontend/clairo-frontend`, build command `npm run build`, output directory `dist`. Set `VITE_API_URL` to your deployed backend URL. **Do not set `VITE_ADMIN_API_KEY`** on a public deployment (see the warning in the Environment Variables section above) — seed demo data from the command line instead.
-
-Via CLI: `vercel link` then `vercel env add VITE_API_URL production` then `vercel --prod` from `clairo-frontend/clairo-frontend`.
-
----
-
-## Demo Script (for the video)
-
-1. **Open CLAIRO** → watch the shader intro → enter the app
-2. **InsForge tab** → show the live DB status banner (InsForge Postgres, Xms latency), stats cards, live claim feed
-3. **Run an agent query** → "What are the highest-risk claims?" → watch it pull from InsForge and synthesize
-4. **CLΔIRO tab** → upload a denial PDF → extraction + classification + risk score appear
-5. **InsForge tab** → refresh → the new claim appears in the live feed instantly
-6. **Appeal Letter tab** → generate appeal → download PDF
-7. **Prior Authorization tab** → paste clinical notes → show the per-requirement checklist
-8. **Analytics tab** → show the four charts, industry benchmark comparison
-9. **MCP Inspector** → show `insforge_query` tool call returning live DB data
+UHC · Aetna · BCBS (TX, Arkansas, Excellus) · Cigna / ASH / eviCore · Medicare LCD · CHPW · Centene/Health Net · Molina · Kaiser · Carelon · Humana · Florida Medicaid — 20+ policy PDFs in `clairo-backend/app/data/policies/`. To add one: drop the PDF there, add a line to `run_ingest.py`, rerun it.

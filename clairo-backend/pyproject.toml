@@ -12,4 +12,5 @@ ignore = ["E501", "B008"]   # B008: FastAPI's Depends() in defaults is idiomatic
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
